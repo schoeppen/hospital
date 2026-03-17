@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gestão de Escalas — Centro Hospitalar do Baixo Vouga</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <header>
+        <div class="header-content">
+            <div class="logo-area">
+                <div class="logo-icon">🏥</div>
+                <div>
+                    <h1>Centro Hospitalar do Baixo Vouga</h1>
+                    <p class="subtitle">Hospital de Aveiro — Gestão de Escalas Médicas</p>
+                </div>
+            </div>
+            <nav>
+                <button class="nav-btn active" data-view="schedule">Escala Mensal</button>
+                <button class="nav-btn" data-view="doctors">Médicos</button>
+                <button class="nav-btn" data-view="rotations">Rotações</button>
+                <button class="nav-btn" data-view="hours">Resumo Horas</button>
+            </nav>
+            <div class="data-actions">
+                <button id="export-btn" class="btn btn-sm btn-export" title="Exportar dados">💾 Exportar</button>
+                <button id="import-btn" class="btn btn-sm btn-import" title="Importar dados">📂 Importar</button>
+                <input type="file" id="import-file" accept=".json" style="display:none">
+                <span id="save-status" class="save-status">✓ Guardado</span>
+            </div>
+        </div>
+    </header>
+
+    <main>
+        <!-- Schedule View -->
+        <section id="schedule-view" class="view active">
+            <div class="schedule-toolbar">
+                <button id="prev-week" class="btn btn-icon">◀</button>
+                <h2 id="week-label"></h2>
+                <button id="next-week" class="btn btn-icon">▶</button>
+                <button id="auto-fill-btn" class="btn btn-primary">Auto-Preencher</button>
+                <button id="clear-week-btn" class="btn btn-danger">Limpar Mês</button>
+            </div>
+            <div class="schedule-grid" id="schedule-grid"></div>
+            <div class="schedule-legend">
+                <span class="legend-item"><span class="dot dot-ok"></span> Completo (2 médicos)</span>
+                <span class="legend-item"><span class="dot dot-warn"></span> Incompleto (1 médico)</span>
+                <span class="legend-item"><span class="dot dot-empty"></span> Vazio (0 médicos)</span>
+            </div>
+        </section>
+
+        <!-- Doctors View -->
+        <section id="doctors-view" class="view">
+            <div class="doctors-toolbar">
+                <h2>Gestão de Médicos</h2>
+                <button id="add-doctor-btn" class="btn btn-primary">+ Adicionar Médico</button>
+            </div>
+            <div class="doctors-list" id="doctors-list"></div>
+        </section>
+
+        <!-- Rotations View -->
+        <section id="rotations-view" class="view">
+            <div class="doctors-toolbar">
+                <div>
+                    <h2>Rotações</h2>
+                    <p class="help-text" style="margin-top:4px">Defina pares de médicos que alternam num turno específico (semana A / semana B).</p>
+                </div>
+                <button id="add-rotation-btn" class="btn btn-primary">+ Nova Rotação</button>
+            </div>
+            <div id="rotations-list" class="rotations-list"></div>
+        </section>
+
+        <!-- Hours Summary View -->
+        <section id="hours-view" class="view">
+            <div class="schedule-toolbar">
+                <button id="hours-prev-year" class="btn btn-icon">◀</button>
+                <h2 id="hours-year-label"></h2>
+                <button id="hours-next-year" class="btn btn-icon">▶</button>
+            </div>
+            <div class="hours-table-wrapper">
+                <table class="hours-table" id="hours-table"></table>
+            </div>
+            <div class="hours-legend">
+                <span class="legend-item"><span class="legend-color legend-fixed"></span> Horas Fixas</span>
+                <span class="legend-item"><span class="legend-color legend-extra"></span> Horas Extra</span>
+                <span class="legend-item"><span class="legend-color legend-accum"></span> Acumulado Extra (Jan–Dez)</span>
+            </div>
+        </section>
+    </main>
+
+    <!-- Rotation Modal -->
+    <div class="modal-overlay" id="rotation-modal">
+        <div class="modal modal-sm">
+            <div class="modal-header">
+                <h3 id="rotation-modal-title">Nova Rotação</h3>
+                <button class="modal-close" id="rotation-modal-close">&times;</button>
+            </div>
+            <form id="rotation-form" style="padding:24px">
+                <input type="hidden" id="rotation-id">
+                <div class="form-group">
+                    <label for="rotation-doc-a">Médico A (semanas ímpares)</label>
+                    <select id="rotation-doc-a" required></select>
+                </div>
+                <div class="form-group">
+                    <label for="rotation-doc-b">Médico B (semanas pares)</label>
+                    <select id="rotation-doc-b" required></select>
+                </div>
+                <div class="form-group">
+                    <label for="rotation-day">Dia da Semana</label>
+                    <select id="rotation-day">
+                        <option value="0">Segunda</option>
+                        <option value="1">Terça</option>
+                        <option value="2">Quarta</option>
+                        <option value="3" selected>Quinta</option>
+                        <option value="4">Sexta</option>
+                        <option value="5">Sábado</option>
+                        <option value="6">Domingo</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="rotation-shift">Turno</label>
+                    <select id="rotation-shift">
+                        <option value="day">Diurno (08:30–20:30)</option>
+                        <option value="night" selected>Noturno (20:30–08:30)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="rotation-start">Semana de referência (Médico A começa)</label>
+                    <input type="week" id="rotation-start" required>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn" id="rotation-cancel">Cancelar</button>
+                    <button type="submit" class="btn btn-primary">Guardar</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Doctor Modal -->
+    <div class="modal-overlay" id="doctor-modal">
+        <div class="modal modal-lg">
+            <div class="modal-header">
+                <h3 id="modal-title">Adicionar Médico</h3>
+                <button class="modal-close" id="modal-close">&times;</button>
+            </div>
+            <form id="doctor-form">
+                <input type="hidden" id="doctor-id">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="doctor-name">Nome Completo</label>
+                        <input type="text" id="doctor-name" required placeholder="Dr. / Dra.">
+                    </div>
+                    <div class="form-group">
+                        <label for="doctor-specialty">Especialidade</label>
+                        <input type="text" id="doctor-specialty" placeholder="Ex: Medicina Interna">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="doctor-phone">Telefone</label>
+                        <input type="tel" id="doctor-phone" placeholder="Ex: 912 345 678">
+                    </div>
+                    <div class="form-group">
+                        <label for="doctor-email">Email</label>
+                        <input type="email" id="doctor-email" placeholder="email@exemplo.pt">
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label for="doctor-hours-limit">Limite de Horas Flexíveis / Mês</label>
+                    <input type="number" id="doctor-hours-limit" min="0" step="1" placeholder="Ex: 150">
+                    <span class="field-hint">Cada turno = 12h. Aplica-se aos turnos extra (flexíveis). Deixe vazio se sem limite.</span>
+                </div>
+
+                <div id="fixed-schedule-section">
+                    <div class="fixed-header-row">
+                        <h4>Horário Fixo</h4>
+                        <label class="toggle-label">
+                            <input type="checkbox" id="fixed-monthly-toggle">
+                            <span>Definir por mês (dia a dia)</span>
+                        </label>
+                    </div>
+                    <div id="fixed-weekly-section">
+                        <div class="avail-mode-toggle fixed-mode-toggle" style="margin-bottom:8px">
+                            <button type="button" class="mode-btn active" data-mode="works" id="fixed-mode-works">Turnos que FAZ</button>
+                            <button type="button" class="mode-btn" data-mode="blocked" id="fixed-mode-blocked">Dias que NÃO PODE</button>
+                        </div>
+                        <p class="help-text" id="fixed-mode-hint">Selecione os turnos fixos que repetem todas as semanas.</p>
+                        <div class="fixed-grid" id="fixed-schedule-grid"></div>
+                    </div>
+                    <div id="fixed-monthly-section" class="hidden">
+                        <p class="help-text">Selecione os turnos fixos dia a dia. Use as setas para navegar entre meses.</p>
+                        <div class="month-nav" style="margin-bottom:8px">
+                            <button type="button" class="btn btn-icon btn-sm" id="fixed-prev-month">◀</button>
+                            <span id="fixed-month-label" style="font-weight:600;font-size:14px"></span>
+                            <button type="button" class="btn btn-icon btn-sm" id="fixed-next-month">▶</button>
+                        </div>
+                        <div class="monthly-calendar fixed-monthly-cal" id="fixed-monthly-calendar"></div>
+                    </div>
+                </div>
+
+                <div id="day-rules-section">
+                    <h4>Regras Mensais por Dia da Semana</h4>
+                    <p class="help-text">Defina quantos turnos por dia da semana o médico deve fazer em cada mês. Ex: 2 Quintas 24h + 1 Quinta Noite.</p>
+                    <div class="rules-toolbar">
+                        <div class="month-nav">
+                            <button type="button" class="btn btn-icon btn-sm" id="rules-prev-month">◀</button>
+                            <span id="rules-month-label" style="font-weight:600;font-size:14px"></span>
+                            <button type="button" class="btn btn-icon btn-sm" id="rules-next-month">▶</button>
+                        </div>
+                        <button type="button" class="btn btn-sm btn-primary" id="add-rule-btn">+ Regra</button>
+                    </div>
+                    <div id="rules-list"></div>
+                </div>
+
+                <div id="availability-section">
+                    <h4>Disponibilidade Mensal</h4>
+                    <div class="avail-controls">
+                        <div class="avail-mode-toggle avail-3-toggle">
+                            <button type="button" class="mode-btn active" data-mode="available">Dias que PODE</button>
+                            <button type="button" class="mode-btn" data-mode="unavailable">NÃO PODE</button>
+                            <button type="button" class="mode-btn" data-mode="vacation">Férias</button>
+                        </div>
+                        <div class="month-nav">
+                            <button type="button" class="btn btn-icon btn-sm" id="avail-prev-month">◀</button>
+                            <span id="avail-month-label"></span>
+                            <button type="button" class="btn btn-icon btn-sm" id="avail-next-month">▶</button>
+                        </div>
+                    </div>
+                    <p class="help-text" id="avail-mode-hint">Clique nos dias em que o médico <strong>pode</strong> trabalhar. Todos os outros dias são considerados indisponíveis.</p>
+                    <div class="monthly-calendar" id="monthly-calendar"></div>
+                </div>
+
+                <div class="form-actions">
+                    <button type="button" class="btn" id="modal-cancel">Cancelar</button>
+                    <button type="submit" class="btn btn-primary">Guardar</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Assign Doctor Modal -->
+    <div class="modal-overlay" id="assign-modal">
+        <div class="modal modal-sm">
+            <div class="modal-header">
+                <h3 id="assign-title">Atribuir Médico</h3>
+                <button class="modal-close" id="assign-close">&times;</button>
+            </div>
+            <div id="assign-content"></div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

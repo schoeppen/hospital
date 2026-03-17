@@ -1,0 +1,1785 @@
+// ============================================================
+// Hospital Aveiro – Workforce Schedule Manager
+// Centro Hospitalar do Baixo Vouga
+// ============================================================
+
+const DAYS = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'];
+const DAYS_FULL = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado', 'Domingo'];
+const SHIFTS = ['day', 'night'];
+const SHIFT_LABELS = { day: 'Diurno', night: 'Noturno' };
+const SHIFT_TIMES = { day: '08:30–20:30', night: '20:30–08:30' };
+const DOCTORS_PER_SHIFT = 2;
+const HOURS_PER_SHIFT = 12;
+const MONTH_NAMES = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
+    'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
+
+// ---- State ----
+let doctors = JSON.parse(localStorage.getItem('chbv_doctors') || '[]');
+let schedules = JSON.parse(localStorage.getItem('chbv_schedules') || '{}');
+let rotations = JSON.parse(localStorage.getItem('chbv_rotations') || '[]');
+let currentWeekStart = getMonday(new Date());
+let currentSchedMonth = new Date().getMonth();
+let currentSchedYear = new Date().getFullYear();
+
+// Modal state for monthly calendar
+let modalAvailMonth = new Date().getMonth();
+let modalAvailYear = new Date().getFullYear();
+let modalAvailMode = 'available'; // 'available', 'unavailable', or 'vacation'
+let modalAvailData = {};    // days the doctor CAN work
+let modalUnavailData = {};  // days the doctor CANNOT work
+let modalVacationData = {}; // days the doctor is on vacation (férias)
+
+// Modal state for fixed monthly calendar
+let modalFixedMonth = new Date().getMonth();
+let modalFixedYear = new Date().getFullYear();
+let modalFixedMonthlyData = {};
+let modalFixedWeeklyMode = 'works'; // 'works' or 'blocked'
+let modalFixedBlockedData = {}; // separate store for blocked shifts
+
+// Modal state for monthly day rules
+let modalRulesMonth = new Date().getMonth();
+let modalRulesYear = new Date().getFullYear();
+let modalRulesData = {}; // { "2026-03": [ {dayOfWeek, shiftType, count}, ... ] }
+
+function save() {
+    localStorage.setItem('chbv_doctors', JSON.stringify(doctors));
+    localStorage.setItem('chbv_schedules', JSON.stringify(schedules));
+    localStorage.setItem('chbv_rotations', JSON.stringify(rotations));
+    // Update save indicator
+    const el = document.getElementById('save-status');
+    if (el) {
+        el.textContent = '✓ Guardado';
+        el.classList.add('saved');
+        setTimeout(() => el.classList.remove('saved'), 2000);
+    }
+    // Refresh hours summary if it's been initialized
+    if (typeof renderHoursSummary === 'function' && document.getElementById('hours-table')) {
+        try { renderHoursSummary(); } catch(e) {}
+    }
+}
+
+// ---- Utility ----
+function generateId() {
+    return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
+
+function getMonday(d) {
+    const date = new Date(d);
+    const day = date.getDay();
+    const diff = date.getDate() - day + (day === 0 ? -6 : 1);
+    date.setDate(diff);
+    date.setHours(0, 0, 0, 0);
+    return date;
+}
+
+function formatDate(d) {
+    return d.toLocaleDateString('pt-PT', { day: '2-digit', month: '2-digit' });
+}
+
+function dateKey(d) {
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+}
+
+function weekKey(date) {
+    return date.toISOString().slice(0, 10);
+}
+
+function getWeekDates() {
+    const dates = [];
+    for (let i = 0; i < 7; i++) {
+        const d = new Date(currentWeekStart);
+        d.setDate(d.getDate() + i);
+        dates.push(d);
+    }
+    return dates;
+}
+
+function getMonthDates() {
+    const daysInMonth = new Date(currentSchedYear, currentSchedMonth + 1, 0).getDate();
+    const dates = [];
+    for (let d = 1; d <= daysInMonth; d++) {
+        dates.push(new Date(currentSchedYear, currentSchedMonth, d));
+    }
+    return dates;
+}
+
+function shiftKey(date, shift) {
+    return `${dateKey(date)}_${shift}`;
+}
+
+function getScheduleForWeek() {
+    const wk = weekKey(currentWeekStart);
+    if (!schedules[wk]) schedules[wk] = {};
+    return schedules[wk];
+}
+
+// Get schedule for a specific date (finds the correct week)
+function getScheduleForDate(date) {
+    const monday = getMonday(date);
+    const wk = weekKey(monday);
+    if (!schedules[wk]) schedules[wk] = {};
+    return schedules[wk];
+}
+
+// Get assigned doctors for a specific date+shift
+function getAssignedForShift(date, shift) {
+    const sched = getScheduleForDate(date);
+    const sk = shiftKey(date, shift);
+    return sched[sk] || [];
+}
+
+// Set assigned doctors for a specific date+shift
+function setAssignedForShift(date, shift, docIds) {
+    const sched = getScheduleForDate(date);
+    const sk = shiftKey(date, shift);
+    sched[sk] = docIds;
+}
+
+function monthKey(year, month) {
+    return `${year}-${String(month + 1).padStart(2, '0')}`;
+}
+
+// Calculate hours assigned to a doctor in a given month (only non-fixed shifts count toward limit)
+function getMonthlyFlexHours(docId, year, month) {
+    const doc = doctors.find(d => d.id === docId);
+    let hours = 0;
+    Object.keys(schedules).forEach(wk => {
+        const weekSched = schedules[wk];
+        Object.keys(weekSched).forEach(sk => {
+            const parts = sk.split('_');
+            const shiftType = parts.pop();
+            const dateStr = parts.join('_');
+            const d = new Date(dateStr + 'T00:00:00');
+            if (d.getFullYear() === year && d.getMonth() === month) {
+                if (weekSched[sk].includes(docId)) {
+                    // Only count if this is NOT a fixed-schedule shift for this doctor
+                    const isFixed = doc && isFixedForShiftOnDate(doc, d, shiftType);
+                    if (!isFixed) {
+                        hours += HOURS_PER_SHIFT;
+                    }
+                }
+            }
+        });
+    });
+    return hours;
+}
+
+// Total hours (fixed + flex) in a month
+function getMonthlyTotalHours(docId, year, month) {
+    let hours = 0;
+    Object.keys(schedules).forEach(wk => {
+        const weekSched = schedules[wk];
+        Object.keys(weekSched).forEach(sk => {
+            const parts = sk.split('_');
+            const shiftType = parts.pop();
+            const dateStr = parts.join('_');
+            const d = new Date(dateStr + 'T00:00:00');
+            if (d.getFullYear() === year && d.getMonth() === month) {
+                if (weekSched[sk].includes(docId)) {
+                    hours += HOURS_PER_SHIFT;
+                }
+            }
+        });
+    });
+    return hours;
+}
+
+// ---- Navigation ----
+document.querySelectorAll('.nav-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+        document.getElementById(`${btn.dataset.view}-view`).classList.add('active');
+    });
+});
+
+// ---- Schedule Rendering (Monthly — transposed: rows=days, cols=shifts) ----
+function renderSchedule() {
+    const grid = document.getElementById('schedule-grid');
+    const dates = getMonthDates();
+
+    document.getElementById('week-label').textContent =
+        `${MONTH_NAMES[currentSchedMonth]} ${currentSchedYear}`;
+
+    // 3 columns: day label | Diurno | Noturno
+    grid.style.gridTemplateColumns = 'auto 1fr 1fr';
+
+    let html = '';
+    const todayStr = new Date().toDateString();
+
+    // Header row
+    html += '<div class="grid-header grid-corner"></div>';
+    SHIFTS.forEach(shift => {
+        html += `<div class="grid-header shift-col-header ${shift}">
+            ${SHIFT_LABELS[shift]}<small>${SHIFT_TIMES[shift]}</small>
+        </div>`;
+    });
+
+    // One row per day
+    dates.forEach(d => {
+        const dk = dateKey(d);
+        const dow = (d.getDay() + 6) % 7;
+        const isToday = d.toDateString() === todayStr;
+        const isWeekend = dow >= 5;
+
+        // Day label (row header)
+        html += `<div class="day-row-label ${isWeekend ? 'weekend-header' : ''} ${isToday ? 'today-label' : ''}">
+            <span class="day-num">${d.getDate()}</span>
+            <span class="day-name">${DAYS[dow]}</span>
+        </div>`;
+
+        // Shift cells
+        SHIFTS.forEach(shift => {
+            const assigned = getAssignedForShift(d, shift);
+            const count = assigned.length;
+            const statusClass = count >= DOCTORS_PER_SHIFT ? 'complete' : count > 0 ? 'partial' : 'empty';
+            const cellClass = shift === 'day' ? 'day-shift' : 'night-shift';
+
+            html += `<div class="shift-cell ${cellClass} ${statusClass} ${isWeekend ? 'weekend-cell' : ''} ${isToday ? 'today-cell' : ''}" data-date="${dk}" data-shift="${shift}">
+                <div class="status-dot"></div>`;
+
+            const monday = getMonday(d);
+            const cellRotations = getRotationsForShift(dow, shift);
+            const rotationDocIds = cellRotations.map(r => getRotationDoctor(r, monday));
+
+            assigned.forEach(docId => {
+                const doc = doctors.find(x => x.id === docId);
+                const isRotation = rotationDocIds.includes(docId);
+                const isFixed = doc && isFixedForShiftOnDate(doc, d, shift);
+                const tagClass = isRotation ? 'rotation-tag' : isFixed ? 'fixed-tag' : '';
+                const shortName = doc ? doc.name.split(' ').map((n,i) => i === 0 ? n : n[0] + '.').join(' ') : '?';
+                html += `<div class="doctor-tag ${tagClass}">
+                    <span>${shortName}</span>
+                    <button class="remove-doc" data-date="${dk}" data-shift="${shift}" data-doc="${docId}">&times;</button>
+                </div>`;
+            });
+
+            if (count < DOCTORS_PER_SHIFT) {
+                html += `<div class="add-slot" data-date="${dk}" data-shift="${shift}">+ Médico</div>`;
+            }
+
+            html += '</div>';
+        });
+    });
+
+    grid.innerHTML = html;
+
+    // Event: add doctor
+    grid.querySelectorAll('.add-slot').forEach(el => {
+        el.addEventListener('click', e => {
+            e.stopPropagation();
+            openAssignModal(el.dataset.date, el.dataset.shift);
+        });
+    });
+
+    // Event: click empty cell
+    grid.querySelectorAll('.shift-cell').forEach(el => {
+        el.addEventListener('click', () => {
+            const dk = el.dataset.date;
+            const shift = el.dataset.shift;
+            const assigned = getAssignedForShift(parseDateKey(dk), shift);
+            if (assigned.length < DOCTORS_PER_SHIFT) {
+                openAssignModal(dk, shift);
+            }
+        });
+    });
+
+    // Event: remove doctor
+    grid.querySelectorAll('.remove-doc').forEach(btn => {
+        btn.addEventListener('click', e => {
+            e.stopPropagation();
+            const dk = btn.dataset.date;
+            const shift = btn.dataset.shift;
+            const docId = btn.dataset.doc;
+            const date = parseDateKey(dk);
+            const sched = getScheduleForDate(date);
+            const sk = shiftKey(date, shift);
+            sched[sk] = (sched[sk] || []).filter(id => id !== docId);
+            save();
+            renderSchedule();
+        });
+    });
+}
+
+function parseDateKey(dk) {
+    const [y, m, d] = dk.split('-').map(Number);
+    return new Date(y, m - 1, d);
+}
+
+// ---- Availability ----
+// A doctor is available on a date+shift if:
+//   1) They have a FIXED shift for that day-of-week + shift, OR
+//   2) Their flexible monthly availability says they can work that date+shift
+function isFixedForShiftOnDate(doc, date, shift) {
+    // Check monthly fixed first (day-by-day overrides)
+    if (doc.fixedMonthly) {
+        const fmd = doc.fixedMonthlyData || {};
+        const dk = dateKey(date);
+        return !!(fmd[dk] && fmd[dk][shift]);
+    }
+    // Weekly repeating pattern (works data)
+    const dayIdx = (date.getDay() + 6) % 7; // Mon=0
+    const key = `${dayIdx}_${shift}`;
+    return !!(doc.fixedSchedule && doc.fixedSchedule[key]);
+}
+
+function isBlockedOnDate(doc, date, shift) {
+    // Blocked days from weekly blocked data
+    if (doc.fixedMonthly) return false;
+    const dayIdx = (date.getDay() + 6) % 7;
+    const key = `${dayIdx}_${shift}`;
+    return !!(doc.fixedBlocked && doc.fixedBlocked[key]);
+}
+
+function isFlexAvailableOnDate(doc, date, shift) {
+    const dk = dateKey(date);
+    const avail = doc.monthlyAvailability || {};
+    const unavail = doc.monthlyUnavailability || {};
+    const vacation = doc.monthlyVacation || {};
+
+    // Vacation or unavailable? No.
+    if (vacation[dk] && vacation[dk][shift]) return false;
+    if (unavail[dk] && unavail[dk][shift]) return false;
+    // Explicitly marked as available? Yes.
+    if (avail[dk] && avail[dk][shift]) return true;
+    // No data for this day — not available by default
+    return false;
+}
+
+function isMonthlyUnavailable(doc, date, shift) {
+    const dk = dateKey(date);
+    const unavail = doc.monthlyUnavailability || {};
+    const vacation = doc.monthlyVacation || {};
+    return !!(unavail[dk] && unavail[dk][shift]) || !!(vacation[dk] && vacation[dk][shift]);
+}
+
+function isOnVacation(doc, date, shift) {
+    const dk = dateKey(date);
+    const vacation = doc.monthlyVacation || {};
+    return !!(vacation[dk] && vacation[dk][shift]);
+}
+
+function isDoctorAvailableOnDate(doc, date, shift) {
+    // Blocked days (weekly) override everything
+    if (isBlockedOnDate(doc, date, shift)) return false;
+    // Monthly unavailability overrides fixed schedule (ex: férias)
+    if (isMonthlyUnavailable(doc, date, shift)) return false;
+    // Available if fixed OR flex-available
+    return isFixedForShiftOnDate(doc, date, shift) || isFlexAvailableOnDate(doc, date, shift);
+}
+
+// Legacy wrapper for dayIdx
+function isDoctorAvailable(doc, dayIdx, shift) {
+    const dates = getWeekDates();
+    return isDoctorAvailableOnDate(doc, dates[dayIdx], shift);
+}
+
+function isFixedForShift(doc, dayIdx, shift) {
+    const dates = getWeekDates();
+    return isFixedForShiftOnDate(doc, dates[dayIdx], shift);
+}
+
+// Would assigning a flex shift exceed the monthly extra hours limit?
+// If no limit set, assume 0 extra hours allowed
+function wouldExceedFlexLimit(doc, date) {
+    const limit = doc.monthlyHoursLimit || 0;
+    if (limit <= 0) return true; // No extra hours allowed
+    const extraHours = getMonthlyExtraHoursForAutoFill(doc, date);
+    return (extraHours + HOURS_PER_SHIFT) > limit;
+}
+
+// Reusable: count extra (non-fixed) hours for a doctor in a month
+function getMonthlyExtraHoursFromSchedule(doc, date) {
+    return getMonthlyExtraHoursForAutoFill(doc, date);
+}
+
+// ---- Assign Modal ----
+function openAssignModal(dk, shift) {
+    const date = typeof dk === 'string' ? parseDateKey(dk) : dk;
+    const dayIdx = (date.getDay() + 6) % 7;
+    const monday = getMonday(date);
+    const sk = shiftKey(date, shift);
+    const sched = getScheduleForDate(date);
+    const assigned = sched[sk] || [];
+
+    document.getElementById('assign-title').textContent =
+        `${DAYS_FULL[dayIdx]} ${formatDate(date)} — ${SHIFT_LABELS[shift]}`;
+
+    const content = document.getElementById('assign-content');
+
+    if (doctors.length === 0) {
+        content.innerHTML = '<p class="help-text">Nenhum médico registado. Adicione médicos primeiro.</p>';
+        document.getElementById('assign-modal').classList.add('open');
+        return;
+    }
+
+    const sorted = [...doctors].sort((a, b) => {
+        const aAvail = isDoctorAvailableOnDate(a, date, shift);
+        const bAvail = isDoctorAvailableOnDate(b, date, shift);
+        if (aAvail && !bAvail) return -1;
+        if (!aAvail && bAvail) return 1;
+        return a.name.localeCompare(b.name);
+    });
+
+    let html = '<ul class="assign-list">';
+    sorted.forEach(doc => {
+        if (assigned.includes(doc.id)) return;
+
+        const isFixed = isFixedForShiftOnDate(doc, date, shift);
+        const isFlexAvail = isFlexAvailableOnDate(doc, date, shift);
+        const blocked = isBlockedOnDate(doc, date, shift);
+        const monthlyUnavail = isMonthlyUnavailable(doc, date, shift);
+        const vacation = isOnVacation(doc, date, shift);
+        const available = !blocked && !monthlyUnavail && (isFixed || isFlexAvail);
+        const shiftRotations = getRotationsForShift(dayIdx, shift);
+        const isRotationDoc = shiftRotations.some(r => getRotationDoctor(r, monday) === doc.id);
+        const extraLimit = doc.monthlyHoursLimit || 0;
+        const currentExtra = getMonthlyExtraHoursFromSchedule(doc, date);
+        const overLimit = !isFixed && (currentExtra + HOURS_PER_SHIFT) > extraLimit;
+
+        let badges = [];
+
+        if (isRotationDoc) {
+            badges.push('<span class="avail-badge rotation">Rotação</span>');
+        }
+        if (isFixed && !monthlyUnavail) {
+            badges.push('<span class="avail-badge fixed">Fixo</span>');
+        }
+        if (isFlexAvail && !isFixed) {
+            badges.push('<span class="avail-badge yes">Flex</span>');
+        }
+        if (vacation) {
+            badges.push('<span class="avail-badge vacation">Férias</span>');
+        } else if (monthlyUnavail) {
+            badges.push('<span class="avail-badge no">Indisponível (mensal)</span>');
+        }
+        if (blocked) {
+            badges.push('<span class="avail-badge no">Bloqueado</span>');
+        }
+        if (!available && !isRotationDoc && !blocked && !monthlyUnavail) {
+            badges.push('<span class="avail-badge no">Indisponível</span>');
+        }
+        if (overLimit) {
+            badges.push('<span class="avail-badge limit-warn">Excede limite</span>');
+        }
+
+        // Rule badges
+        const mk = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}`;
+        const dow = (date.getDay() + 6) % 7;
+        const docRules = (doc.monthlyDayRules && doc.monthlyDayRules[mk]) || [];
+        const applicableRules = docRules.filter(r => r.dayOfWeek === dow);
+        applicableRules.forEach(rule => {
+            const assigned = countMonthlyDowAssignments(doc.id, date.getFullYear(), date.getMonth(), dow, rule.shiftType);
+            const shiftMatch = rule.shiftType === '24h' || rule.shiftType === shift;
+            if (shiftMatch) {
+                const label = `${DAYS[dow]} ${rule.shiftType === '24h' ? '24h' : (rule.shiftType === 'day' ? 'D' : 'N')}`;
+                const cls = assigned >= rule.count ? 'rule-done' : 'rule';
+                badges.push(`<span class="avail-badge ${cls}">Regra: ${assigned}/${rule.count} ${label}</span>`);
+            }
+        });
+
+        let hoursHtml = '';
+        hoursHtml = `<span class="hours-remaining">${currentExtra}/${extraLimit}h extra</span>`;
+
+        const canAssign = !blocked && !monthlyUnavail && (available || isRotationDoc);
+        html += `<li class="assign-item ${!canAssign ? 'unavailable' : ''}"
+                     data-doc-id="${doc.id}" data-available="${canAssign}">
+            <span>${doc.name}${hoursHtml}</span>
+            <span>${badges.join(' ')}</span>
+        </li>`;
+    });
+    html += '</ul>';
+
+    content.innerHTML = html;
+
+    content.querySelectorAll('.assign-item').forEach(item => {
+        item.addEventListener('click', () => {
+            if (item.dataset.available === 'false') return;
+            const docId = item.dataset.docId;
+            if (!sched[sk]) sched[sk] = [];
+            if (sched[sk].length >= DOCTORS_PER_SHIFT) return;
+            sched[sk].push(docId);
+            save();
+            renderSchedule();
+            document.getElementById('assign-modal').classList.remove('open');
+        });
+    });
+
+    document.getElementById('assign-modal').classList.add('open');
+}
+
+// ---- Rotations ----
+function getWeekNumber(date) {
+    const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+    d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7));
+    const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+    return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+}
+
+function getRotationDoctor(rotation, weekStartDate) {
+    const refDate = isoWeekToDate(rotation.startWeek);
+    const refWeekNum = getWeekNumber(refDate);
+    const currentWeekNum = getWeekNumber(weekStartDate);
+    const refYear = refDate.getFullYear();
+    const curYear = weekStartDate.getFullYear();
+    const weeksDiff = (curYear - refYear) * 52 + (currentWeekNum - refWeekNum);
+    return (weeksDiff % 2 === 0) ? rotation.doctorA : rotation.doctorB;
+}
+
+function isoWeekToDate(isoWeek) {
+    const [year, week] = isoWeek.split('-W').map(Number);
+    const jan4 = new Date(year, 0, 4);
+    const monday = new Date(jan4);
+    monday.setDate(jan4.getDate() - (jan4.getDay() || 7) + 1);
+    monday.setDate(monday.getDate() + (week - 1) * 7);
+    return monday;
+}
+
+function getRotationsForShift(dayIdx, shift) {
+    return rotations.filter(r => r.dayIdx === dayIdx && r.shift === shift);
+}
+
+function renderRotations() {
+    const list = document.getElementById('rotations-list');
+
+    if (rotations.length === 0) {
+        list.innerHTML = `<div class="empty-state">
+            <div class="empty-icon">🔄</div>
+            <p>Nenhuma rotação definida.<br>Clique em "Nova Rotação" para criar uma alternância entre dois médicos.</p>
+        </div>`;
+        return;
+    }
+
+    let html = '';
+    rotations.forEach(rot => {
+        const docA = doctors.find(d => d.id === rot.doctorA);
+        const docB = doctors.find(d => d.id === rot.doctorB);
+        const activeDoc = getRotationDoctor(rot, currentWeekStart);
+        const activeIsA = activeDoc === rot.doctorA;
+
+        html += `<div class="rotation-card">
+            <h3>${DAYS_FULL[rot.dayIdx]} — ${SHIFT_LABELS[rot.shift]} (${SHIFT_TIMES[rot.shift]})</h3>
+            <div class="this-week-indicator">Esta semana: ${activeIsA ? (docA ? docA.name : '?') : (docB ? docB.name : '?')}</div>
+            <div class="rotation-detail">
+                <span class="week-label week-a">Semana A</span>
+                <span>${docA ? docA.name : '(eliminado)'}</span>
+            </div>
+            <div class="rotation-detail">
+                <span class="week-label week-b">Semana B</span>
+                <span>${docB ? docB.name : '(eliminado)'}</span>
+            </div>
+            <div class="rotation-info">Referência: semana ${rot.startWeek} — ${docA ? docA.name.split(' ')[0] : '?'} começa</div>
+            <div class="card-actions">
+                <button class="btn btn-sm" onclick="editRotation('${rot.id}')">Editar</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteRotation('${rot.id}')">Eliminar</button>
+            </div>
+        </div>`;
+    });
+
+    list.innerHTML = html;
+}
+
+function populateRotationDoctorSelects(selectedA, selectedB) {
+    const selA = document.getElementById('rotation-doc-a');
+    const selB = document.getElementById('rotation-doc-b');
+    let opts = '<option value="">— Selecionar médico —</option>';
+    doctors.forEach(doc => {
+        opts += `<option value="${doc.id}">${doc.name}</option>`;
+    });
+    selA.innerHTML = opts;
+    selB.innerHTML = opts;
+    if (selectedA) selA.value = selectedA;
+    if (selectedB) selB.value = selectedB;
+}
+
+function getCurrentISOWeek() {
+    const d = new Date();
+    const wn = getWeekNumber(d);
+    return `${d.getFullYear()}-W${String(wn).padStart(2, '0')}`;
+}
+
+document.getElementById('add-rotation-btn').addEventListener('click', () => {
+    document.getElementById('rotation-modal-title').textContent = 'Nova Rotação';
+    document.getElementById('rotation-id').value = '';
+    document.getElementById('rotation-day').value = '3';
+    document.getElementById('rotation-shift').value = 'night';
+    document.getElementById('rotation-start').value = getCurrentISOWeek();
+    populateRotationDoctorSelects('', '');
+    document.getElementById('rotation-modal').classList.add('open');
+});
+
+window.editRotation = function(id) {
+    const rot = rotations.find(r => r.id === id);
+    if (!rot) return;
+    document.getElementById('rotation-modal-title').textContent = 'Editar Rotação';
+    document.getElementById('rotation-id').value = rot.id;
+    document.getElementById('rotation-day').value = rot.dayIdx;
+    document.getElementById('rotation-shift').value = rot.shift;
+    document.getElementById('rotation-start').value = rot.startWeek;
+    populateRotationDoctorSelects(rot.doctorA, rot.doctorB);
+    document.getElementById('rotation-modal').classList.add('open');
+};
+
+window.deleteRotation = function(id) {
+    if (!confirm('Eliminar esta rotação?')) return;
+    rotations = rotations.filter(r => r.id !== id);
+    save();
+    renderRotations();
+    renderSchedule();
+};
+
+document.getElementById('rotation-form').addEventListener('submit', e => {
+    e.preventDefault();
+    const docA = document.getElementById('rotation-doc-a').value;
+    const docB = document.getElementById('rotation-doc-b').value;
+    if (!docA || !docB) return alert('Selecione ambos os médicos.');
+    if (docA === docB) return alert('Os dois médicos devem ser diferentes.');
+
+    const id = document.getElementById('rotation-id').value || generateId();
+    const rotData = {
+        id, doctorA: docA, doctorB: docB,
+        dayIdx: parseInt(document.getElementById('rotation-day').value),
+        shift: document.getElementById('rotation-shift').value,
+        startWeek: document.getElementById('rotation-start').value,
+    };
+
+    const idx = rotations.findIndex(r => r.id === id);
+    if (idx >= 0) rotations[idx] = rotData;
+    else rotations.push(rotData);
+
+    save();
+    renderRotations();
+    renderSchedule();
+    document.getElementById('rotation-modal').classList.remove('open');
+});
+
+document.getElementById('rotation-modal-close').addEventListener('click', () => {
+    document.getElementById('rotation-modal').classList.remove('open');
+});
+document.getElementById('rotation-cancel').addEventListener('click', () => {
+    document.getElementById('rotation-modal').classList.remove('open');
+});
+document.getElementById('rotation-modal').addEventListener('click', e => {
+    if (e.target === document.getElementById('rotation-modal'))
+        document.getElementById('rotation-modal').classList.remove('open');
+});
+
+// ---- Auto-fill ----
+
+// Check if a doctor needs rest: after working a night shift, they cannot work the next 2 shifts
+// (next day's day shift and next day's night shift = full day off after a night)
+function needsRestAfterNight(docId, date, shift) {
+    const prevDay = new Date(date);
+    prevDay.setDate(prevDay.getDate() - 1);
+    const prevNightAssigned = getAssignedForShift(prevDay, 'night');
+    return prevNightAssigned.includes(docId);
+}
+
+// Check if assigning this doctor to this shift would exceed their monthly hours limit
+// If monthlyHoursLimit is not set (null/undefined/0), assume 0 extra hours allowed
+function wouldExceedMonthlyLimit(doc, date) {
+    const limit = doc.monthlyHoursLimit || 0;
+    // Count only extra (non-fixed) hours
+    const extraHours = getMonthlyExtraHoursForAutoFill(doc, date);
+    return (extraHours + HOURS_PER_SHIFT) > limit;
+}
+
+// Count extra hours (non-fixed) assigned this month for auto-fill check
+function getMonthlyExtraHoursForAutoFill(doc, date) {
+    const year = date.getFullYear();
+    const month = date.getMonth();
+    let extraHours = 0;
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    for (let d = 1; d <= daysInMonth; d++) {
+        const dt = new Date(year, month, d);
+        SHIFTS.forEach(s => {
+            const assigned = getAssignedForShift(dt, s);
+            if (assigned.includes(doc.id)) {
+                // Only count if NOT a fixed shift
+                if (!isFixedForShiftOnDate(doc, dt, s)) {
+                    extraHours += HOURS_PER_SHIFT;
+                }
+            }
+        });
+    }
+    return extraHours;
+}
+
+// Get total hours for a doctor in the current month (used for sorting/priority)
+function getCurrentMonthHours(docId, dates) {
+    let hours = 0;
+    dates.forEach(d => {
+        SHIFTS.forEach(s => {
+            const assigned = getAssignedForShift(d, s);
+            if (assigned.includes(docId)) hours += HOURS_PER_SHIFT;
+        });
+    });
+    return hours;
+}
+
+document.getElementById('auto-fill-btn').addEventListener('click', () => {
+    const dates = getMonthDates();
+
+    // Helper to get/init sched array for a date+shift
+    function getSk(date, shift) {
+        const sched = getScheduleForDate(date);
+        const sk = shiftKey(date, shift);
+        if (!sched[sk]) sched[sk] = [];
+        return { sched, sk, arr: sched[sk] };
+    }
+
+    // =========================================
+    // PASS 1: Rotation doctors
+    // =========================================
+    dates.forEach(date => {
+        const dayIdx = (date.getDay() + 6) % 7;
+        const monday = getMonday(date);
+        SHIFTS.forEach(shift => {
+            const { arr } = getSk(date, shift);
+            const shiftRotations = getRotationsForShift(dayIdx, shift);
+            shiftRotations.forEach(rot => {
+                const docId = getRotationDoctor(rot, monday);
+                const doc = doctors.find(d => d.id === docId);
+                if (doc && isMonthlyUnavailable(doc, date, shift)) return;
+                if (!arr.includes(docId) && arr.length < DOCTORS_PER_SHIFT) {
+                    arr.push(docId);
+                }
+            });
+        });
+    });
+
+    // =========================================
+    // PASS 2: Fixed-schedule doctors
+    // =========================================
+    dates.forEach(date => {
+        SHIFTS.forEach(shift => {
+            const { arr } = getSk(date, shift);
+            doctors.forEach(doc => {
+                if (isFixedForShiftOnDate(doc, date, shift) && !isMonthlyUnavailable(doc, date, shift)) {
+                    if (!arr.includes(doc.id) && arr.length < DOCTORS_PER_SHIFT) {
+                        arr.push(doc.id);
+                    }
+                }
+            });
+        });
+    });
+
+    // =========================================
+    // PASS 2.5: Monthly day-of-week rules
+    // =========================================
+    doctors.forEach(doc => {
+        const rules = doc.monthlyDayRules || {};
+        dates.forEach(date => {
+            const mk = monthKey(date.getFullYear(), date.getMonth());
+            const monthRules = rules[mk] || [];
+            const dow = (date.getDay() + 6) % 7;
+            const applicable = monthRules
+                .filter(r => r.dayOfWeek === dow)
+                .sort((a, b) => (a.shiftType === '24h' ? 0 : 1) - (b.shiftType === '24h' ? 0 : 1));
+
+            applicable.forEach(rule => {
+                const assigned = countMonthlyDowAssignments(
+                    doc.id, date.getFullYear(), date.getMonth(), dow, rule.shiftType);
+                if (assigned >= rule.count) return;
+
+                const shifts = rule.shiftType === '24h' ? ['day', 'night'] : [rule.shiftType];
+                if (shifts.some(s => isBlockedOnDate(doc, date, s) || isMonthlyUnavailable(doc, date, s))) return;
+                // Also check rest-after-night rule
+                if (shifts.some(s => needsRestAfterNight(doc.id, date, s))) return;
+                if (rule.shiftType === '24h') {
+                    const canBoth = shifts.every(s => {
+                        const { arr } = getSk(date, s);
+                        return !arr.includes(doc.id) && arr.length < DOCTORS_PER_SHIFT;
+                    });
+                    if (!canBoth) return;
+                }
+
+                shifts.forEach(s => {
+                    const { arr } = getSk(date, s);
+                    if (!arr.includes(doc.id) && arr.length < DOCTORS_PER_SHIFT) {
+                        arr.push(doc.id);
+                    }
+                });
+            });
+        });
+    });
+
+    // =========================================
+    // PASS 3: Fill remaining slots with flex/extra hours
+    // Rules:
+    //   - After a night shift, doctor rests the ENTIRE next day (next 2 shifts)
+    //   - Cannot exceed monthly EXTRA hours limit (monthlyHoursLimit, default 0)
+    //   - Fixed shifts don't count towards the extra hours limit
+    //   - Prefer doctor with fewer extra hours this month (load balancing)
+    // =========================================
+    dates.forEach(date => {
+        SHIFTS.forEach(shift => {
+            const { arr } = getSk(date, shift);
+
+            while (arr.length < DOCTORS_PER_SHIFT) {
+                const candidates = doctors
+                    .filter(doc => !arr.includes(doc.id))
+                    // Not blocked (weekly)
+                    .filter(doc => !isBlockedOnDate(doc, date, shift))
+                    // Not unavailable (monthly) or on vacation
+                    .filter(doc => !isMonthlyUnavailable(doc, date, shift))
+                    // Rest after night: if worked previous night, skip entire next day
+                    .filter(doc => !needsRestAfterNight(doc.id, date, shift))
+                    // Must have extra hours available (limit > 0 and not exceeded)
+                    .filter(doc => {
+                        const limit = doc.monthlyHoursLimit || 0;
+                        if (limit <= 0) return false; // No extra hours allowed
+                        return !wouldExceedMonthlyLimit(doc, date);
+                    })
+                    .map(doc => ({
+                        doc,
+                        extraHours: getMonthlyExtraHoursForAutoFill(doc, date),
+                        limit: doc.monthlyHoursLimit || 0
+                    }))
+                    // Sort by: fewest extra hours used (load balancing)
+                    .sort((a, b) => a.extraHours - b.extraHours);
+
+                if (candidates.length === 0) break;
+
+                arr.push(candidates[0].doc.id);
+            }
+        });
+    });
+
+    save();
+    renderSchedule();
+});
+
+// ---- Clear week ----
+document.getElementById('clear-week-btn').addEventListener('click', () => {
+    if (!confirm(`Tem a certeza que deseja limpar toda a escala de ${MONTH_NAMES[currentSchedMonth]} ${currentSchedYear}?`)) return;
+    const dates = getMonthDates();
+    dates.forEach(date => {
+        const sched = getScheduleForDate(date);
+        SHIFTS.forEach(shift => {
+            const sk = shiftKey(date, shift);
+            delete sched[sk];
+        });
+    });
+    save();
+    renderSchedule();
+});
+
+// ---- Week navigation ----
+document.getElementById('prev-week').addEventListener('click', () => {
+    currentSchedMonth--;
+    if (currentSchedMonth < 0) { currentSchedMonth = 11; currentSchedYear--; }
+    renderSchedule();
+});
+
+document.getElementById('next-week').addEventListener('click', () => {
+    currentSchedMonth++;
+    if (currentSchedMonth > 11) { currentSchedMonth = 0; currentSchedYear++; }
+    renderSchedule();
+});
+
+// ---- Doctors Rendering ----
+function renderDoctors() {
+    const list = document.getElementById('doctors-list');
+
+    if (doctors.length === 0) {
+        list.innerHTML = `<div class="empty-state">
+            <div class="empty-icon">👨‍⚕️</div>
+            <p>Nenhum médico registado.<br>Clique em "Adicionar Médico" para começar.</p>
+        </div>`;
+        return;
+    }
+
+    const now = new Date();
+    const curMonth = now.getMonth();
+    const curYear = now.getFullYear();
+
+    let html = '';
+    doctors.forEach(doc => {
+        // Determine badges
+        const hasFixedWeekly = (doc.fixedSchedule && Object.keys(doc.fixedSchedule).length > 0) ||
+            (doc.fixedBlocked && Object.keys(doc.fixedBlocked).length > 0);
+        const hasFixedMonthly = doc.fixedMonthly && doc.fixedMonthlyData && Object.keys(doc.fixedMonthlyData).length > 0;
+        const hasFixed = hasFixedWeekly || hasFixedMonthly;
+        const hasAvail = doc.monthlyAvailability && Object.keys(doc.monthlyAvailability).length > 0;
+        const hasUnavail = doc.monthlyUnavailability && Object.keys(doc.monthlyUnavailability).length > 0;
+        const hasVacation = doc.monthlyVacation && Object.keys(doc.monthlyVacation).length > 0;
+        const hasMonthly = hasAvail || hasUnavail || hasVacation;
+
+        let badgesHtml = '';
+        if (hasFixed) {
+            if (hasFixedMonthly) {
+                badgesHtml += '<span class="badge badge-fixed">Fixo Mensal</span> ';
+            } else {
+                badgesHtml += '<span class="badge badge-fixed">Fixo</span> ';
+            }
+        }
+        if (hasMonthly) badgesHtml += '<span class="badge badge-flexible">Flexível</span>';
+        if (!hasFixed && !hasMonthly) badgesHtml += '<span class="badge badge-flexible">Flexível</span>';
+
+        // Hours info - extra hours
+        const extraLimit = doc.monthlyHoursLimit || 0;
+        const fixedHrs = getMonthlyFixedHours(doc.id, curYear, curMonth);
+        const extraUsed = getMonthlyExtraHours(doc.id, curYear, curMonth);
+        const pct = extraLimit > 0 ? Math.min(100, Math.round((extraUsed / extraLimit) * 100)) : (extraUsed > 0 ? 100 : 0);
+        const cls = extraUsed > extraLimit ? 'over' : pct > 80 ? 'warn' : 'ok';
+        let hoursHtml = `<div class="hours-info">
+            <span>Fixo: ${fixedHrs}h | Extra: ${extraUsed}h / ${extraLimit}h (${MONTH_NAMES[curMonth]})</span>
+            <div class="hours-bar"><div class="hours-bar-fill ${cls}" style="width:${Math.min(pct, 100)}%"></div></div>
+        </div>`;
+
+        // Fixed schedule mini-grid
+        let fixedHtml = '';
+        if (hasFixedMonthly) {
+            // Count fixed shifts this month
+            const fmd = doc.fixedMonthlyData || {};
+            const daysInMonthFixed = new Date(curYear, curMonth + 1, 0).getDate();
+            let fixedDayCount = 0;
+            let fixedNightCount = 0;
+            for (let d = 1; d <= daysInMonthFixed; d++) {
+                const dt = new Date(curYear, curMonth, d);
+                const dk = dateKey(dt);
+                if (fmd[dk]) {
+                    if (fmd[dk].day) fixedDayCount++;
+                    if (fmd[dk].night) fixedNightCount++;
+                }
+            }
+            fixedHtml = `<div class="card-section-label">Horário Fixo — ${MONTH_NAMES[curMonth]}</div>
+                <div class="avail-summary">${fixedDayCount} turnos diurnos + ${fixedNightCount} turnos noturnos fixos</div>`;
+        } else if (hasFixedWeekly) {
+            fixedHtml += `<div class="card-section-label">Horário Fixo Semanal</div><div class="availability-mini">`;
+            DAYS.forEach(d => fixedHtml += `<div class="avail-day">${d}</div>`);
+            SHIFTS.forEach(shift => {
+                DAYS.forEach((d, dayIdx) => {
+                    const key = `${dayIdx}_${shift}`;
+                    const isWorks = doc.fixedSchedule && doc.fixedSchedule[key];
+                    const isBlocked = doc.fixedBlocked && doc.fixedBlocked[key];
+                    const cls = isWorks ? 'fixed-shift' : (isBlocked ? 'blocked-shift' : '');
+                    fixedHtml += `<div class="avail-cell ${cls}" title="${DAYS_FULL[dayIdx]} ${SHIFT_LABELS[shift]}"></div>`;
+                });
+            });
+            fixedHtml += '</div>';
+        }
+
+        // Monthly availability summary
+        let flexSummary = '';
+        const daysInMonth = new Date(curYear, curMonth + 1, 0).getDate();
+        let availCount = 0;
+        for (let d = 1; d <= daysInMonth; d++) {
+            const dt = new Date(curYear, curMonth, d);
+            if (isFlexAvailableOnDate(doc, dt, 'day') || isFlexAvailableOnDate(doc, dt, 'night')) {
+                availCount++;
+            }
+        }
+        flexSummary = `<div class="avail-summary">Flex ${MONTH_NAMES[curMonth]}: ${availCount} dias disponíveis</div>`;
+
+        // Monthly day rules summary
+        let rulesSummary = '';
+        const docRules = doc.monthlyDayRules || {};
+        const curMk = monthKey(curYear, curMonth);
+        const curRules = docRules[curMk] || [];
+        if (curRules.length > 0) {
+            const parts = curRules.map(r => {
+                const shiftLabel = r.shiftType === '24h' ? '24h' : r.shiftType === 'day' ? 'D' : 'N';
+                return `${r.count}× ${DAYS[r.dayOfWeek]} ${shiftLabel}`;
+            });
+            rulesSummary = `<div class="rule-summary">Regras ${MONTH_NAMES[curMonth]}: ${parts.join(' + ')}</div>`;
+        }
+
+        html += `<div class="doctor-card">
+            <div class="doctor-card-header">
+                <div>
+                    <h3>${doc.name}</h3>
+                    <span class="specialty">${doc.specialty || '—'}</span>
+                </div>
+                <div>${badgesHtml}</div>
+            </div>
+            <div class="info-row">
+                ${doc.phone ? `<span>📞 ${doc.phone}</span>` : ''}
+                ${doc.email ? `<span>✉ ${doc.email}</span>` : ''}
+            </div>
+            ${hoursHtml}
+            ${fixedHtml}
+            ${rulesSummary}
+            ${flexSummary}
+            <div class="card-actions">
+                <button class="btn btn-sm" onclick="editDoctor('${doc.id}')">Editar</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteDoctor('${doc.id}')">Eliminar</button>
+            </div>
+        </div>`;
+    });
+
+    list.innerHTML = html;
+}
+
+// ---- Doctor Modal ----
+const doctorModal = document.getElementById('doctor-modal');
+const doctorForm = document.getElementById('doctor-form');
+
+function buildFixedGrid(containerId, worksData, blockedData) {
+    const container = document.getElementById(containerId);
+    let html = '<div class="ag-header"></div>';
+    DAYS.forEach(d => html += `<div class="ag-header">${d}</div>`);
+
+    SHIFTS.forEach(shift => {
+        html += `<div class="ag-label">${SHIFT_LABELS[shift]}</div>`;
+        for (let dayIdx = 0; dayIdx < 7; dayIdx++) {
+            const key = `${dayIdx}_${shift}`;
+            const isWorks = worksData && worksData[key];
+            const isBlocked = blockedData && blockedData[key];
+            const cls = isWorks ? 'works' : (isBlocked ? 'blocked' : '');
+            html += `<div class="ag-cell ${cls}" data-key="${key}"></div>`;
+        }
+    });
+
+    container.innerHTML = html;
+    container.querySelectorAll('.ag-cell').forEach(cell => {
+        cell.addEventListener('click', () => {
+            const key = cell.dataset.key;
+            if (modalFixedWeeklyMode === 'works') {
+                if (cell.classList.contains('works')) {
+                    cell.classList.remove('works');
+                } else {
+                    cell.classList.remove('blocked');
+                    cell.classList.add('works');
+                }
+            } else {
+                if (cell.classList.contains('blocked')) {
+                    cell.classList.remove('blocked');
+                } else {
+                    cell.classList.remove('works');
+                    cell.classList.add('blocked');
+                }
+            }
+        });
+    });
+}
+
+function getFixedGridData(containerId) {
+    const cells = document.querySelectorAll(`#${containerId} .ag-cell`);
+    const works = {};
+    const blocked = {};
+    cells.forEach(cell => {
+        if (cell.classList.contains('works')) {
+            works[cell.dataset.key] = true;
+        } else if (cell.classList.contains('blocked')) {
+            blocked[cell.dataset.key] = true;
+        }
+    });
+    return { works, blocked };
+}
+
+// Monthly calendar
+function getShiftDotClass(dk, shift) {
+    const avail = modalAvailData[dk] && modalAvailData[dk][shift];
+    const unavail = modalUnavailData[dk] && modalUnavailData[dk][shift];
+    const vacation = modalVacationData[dk] && modalVacationData[dk][shift];
+    if (vacation) return 'avail-vacation';
+    if (unavail) return 'avail-no';
+    if (avail) return 'avail-yes';
+    return '';
+}
+
+function renderMonthlyCalendar() {
+    const container = document.getElementById('monthly-calendar');
+    const label = document.getElementById('avail-month-label');
+    label.textContent = `${MONTH_NAMES[modalAvailMonth]} ${modalAvailYear}`;
+
+    const firstDay = new Date(modalAvailYear, modalAvailMonth, 1);
+    const daysInMonth = new Date(modalAvailYear, modalAvailMonth + 1, 0).getDate();
+    let startDow = (firstDay.getDay() + 6) % 7;
+
+    let html = '';
+    ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'].forEach(d => {
+        html += `<div class="cal-header">${d}</div>`;
+    });
+
+    for (let i = 0; i < startDow; i++) {
+        html += '<div class="cal-day empty"></div>';
+    }
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    for (let d = 1; d <= daysInMonth; d++) {
+        const dt = new Date(modalAvailYear, modalAvailMonth, d);
+        const dk = dateKey(dt);
+        const dow = (dt.getDay() + 6) % 7;
+        const isWeekend = dow >= 5;
+        const isPast = dt < today;
+
+        const dayCls = getShiftDotClass(dk, 'day');
+        const nightCls = getShiftDotClass(dk, 'night');
+
+        html += `<div class="cal-day ${isWeekend ? 'weekend' : ''} ${isPast ? 'past' : ''}" data-date="${dk}">
+            <div class="day-num">${d}</div>
+            <div class="day-shifts">
+                <div class="shift-dot day-dot ${dayCls}" data-date="${dk}" data-shift="day" title="Diurno">D</div>
+                <div class="shift-dot night-dot ${nightCls}" data-date="${dk}" data-shift="night" title="Noturno">N</div>
+            </div>
+        </div>`;
+    }
+
+    container.innerHTML = html;
+
+    // Helper: get the active store for current mode
+    function getActiveStore() {
+        if (modalAvailMode === 'available') return modalAvailData;
+        if (modalAvailMode === 'unavailable') return modalUnavailData;
+        return modalVacationData;
+    }
+
+    // Helper: clear a shift from all OTHER stores (not the active one)
+    function clearConflicts(dk, shift) {
+        const stores = [modalAvailData, modalUnavailData, modalVacationData];
+        const active = getActiveStore();
+        stores.forEach(store => {
+            if (store === active) return;
+            if (store[dk]) {
+                delete store[dk][shift];
+                if (!store[dk].day && !store[dk].night) delete store[dk];
+            }
+        });
+    }
+
+    function clearAllConflicts(dk) {
+        const stores = [modalAvailData, modalUnavailData, modalVacationData];
+        const active = getActiveStore();
+        stores.forEach(store => {
+            if (store === active) return;
+            delete store[dk];
+        });
+    }
+
+    container.querySelectorAll('.shift-dot').forEach(dot => {
+        dot.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const dk = dot.dataset.date;
+            const shift = dot.dataset.shift;
+            const store = getActiveStore();
+            if (!store[dk]) store[dk] = {};
+            if (store[dk][shift]) {
+                delete store[dk][shift];
+                if (!store[dk].day && !store[dk].night) delete store[dk];
+            } else {
+                store[dk][shift] = true;
+                clearConflicts(dk, shift);
+            }
+            renderMonthlyCalendar();
+        });
+    });
+
+    container.querySelectorAll('.cal-day:not(.empty)').forEach(cell => {
+        cell.addEventListener('click', (e) => {
+            if (e.target.classList.contains('shift-dot')) return;
+            const dk = cell.dataset.date;
+            const store = getActiveStore();
+            const d = store[dk] || {};
+            if (d.day && d.night) {
+                delete store[dk];
+            } else {
+                store[dk] = { day: true, night: true };
+                clearAllConflicts(dk);
+            }
+            renderMonthlyCalendar();
+        });
+    });
+
+    const hint = document.getElementById('avail-mode-hint');
+    const legend = '<span style="color:#27ae60">●</span> pode, <span style="color:#e74c3c">●</span> não pode, <span style="color:#f39c12">●</span> férias';
+    if (modalAvailMode === 'available') {
+        hint.innerHTML = `Clique nos dias em que o médico <strong>pode</strong> trabalhar. ${legend}`;
+    } else if (modalAvailMode === 'unavailable') {
+        hint.innerHTML = `Clique nos dias em que o médico <strong>NÃO pode</strong> trabalhar. ${legend}`;
+    } else {
+        hint.innerHTML = `Clique nos dias de <strong>férias</strong> do médico. ${legend}`;
+    }
+}
+
+// Month navigation
+document.getElementById('avail-prev-month').addEventListener('click', () => {
+    modalAvailMonth--;
+    if (modalAvailMonth < 0) { modalAvailMonth = 11; modalAvailYear--; }
+    renderMonthlyCalendar();
+});
+
+document.getElementById('avail-next-month').addEventListener('click', () => {
+    modalAvailMonth++;
+    if (modalAvailMonth > 11) { modalAvailMonth = 0; modalAvailYear++; }
+    renderMonthlyCalendar();
+});
+
+// Mode toggle
+document.querySelectorAll('.avail-mode-toggle:not(.fixed-mode-toggle) .mode-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('.avail-mode-toggle:not(.fixed-mode-toggle) .mode-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        modalAvailMode = btn.dataset.mode;
+        renderMonthlyCalendar();
+    });
+});
+
+// Fixed weekly mode toggle (works / blocked)
+document.querySelectorAll('.fixed-mode-toggle .mode-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+        document.querySelectorAll('.fixed-mode-toggle .mode-btn').forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        modalFixedWeeklyMode = btn.dataset.mode;
+        const hint = document.getElementById('fixed-mode-hint');
+        hint.innerHTML = modalFixedWeeklyMode === 'works'
+            ? 'Selecione os turnos fixos que repetem todas as semanas. <span style="color:#2980b9">■</span> = faz, <span style="color:#e74c3c">■</span> = bloqueado.'
+            : 'Selecione os turnos em que o médico <strong>nunca pode</strong> trabalhar. <span style="color:#2980b9">■</span> = faz, <span style="color:#e74c3c">■</span> = bloqueado.';
+    });
+});
+
+// Fixed monthly toggle
+const fixedMonthlyToggle = document.getElementById('fixed-monthly-toggle');
+fixedMonthlyToggle.addEventListener('change', () => {
+    document.getElementById('fixed-weekly-section').classList.toggle('hidden', fixedMonthlyToggle.checked);
+    document.getElementById('fixed-monthly-section').classList.toggle('hidden', !fixedMonthlyToggle.checked);
+    if (fixedMonthlyToggle.checked) renderFixedMonthlyCalendar();
+});
+
+function setFixedMonthlyMode(isMonthly) {
+    fixedMonthlyToggle.checked = isMonthly;
+    document.getElementById('fixed-weekly-section').classList.toggle('hidden', isMonthly);
+    document.getElementById('fixed-monthly-section').classList.toggle('hidden', !isMonthly);
+}
+
+// Fixed monthly calendar rendering
+function renderFixedMonthlyCalendar() {
+    const container = document.getElementById('fixed-monthly-calendar');
+    const label = document.getElementById('fixed-month-label');
+    label.textContent = `${MONTH_NAMES[modalFixedMonth]} ${modalFixedYear}`;
+
+    const firstDay = new Date(modalFixedYear, modalFixedMonth, 1);
+    const daysInMonth = new Date(modalFixedYear, modalFixedMonth + 1, 0).getDate();
+    let startDow = (firstDay.getDay() + 6) % 7;
+
+    let html = '';
+    ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'].forEach(d => {
+        html += `<div class="cal-header">${d}</div>`;
+    });
+
+    for (let i = 0; i < startDow; i++) {
+        html += '<div class="cal-day empty"></div>';
+    }
+
+    for (let d = 1; d <= daysInMonth; d++) {
+        const dt = new Date(modalFixedYear, modalFixedMonth, d);
+        const dk = dateKey(dt);
+        const dow = (dt.getDay() + 6) % 7;
+        const isWeekend = dow >= 5;
+
+        const dayData = modalFixedMonthlyData[dk] || {};
+        const dayActive = !!dayData.day;
+        const nightActive = !!dayData.night;
+
+        html += `<div class="cal-day ${isWeekend ? 'weekend' : ''}" data-date="${dk}">
+            <div class="day-num">${d}</div>
+            <div class="day-shifts">
+                <div class="shift-dot day-dot ${dayActive ? 'active' : ''}" data-date="${dk}" data-shift="day" title="Diurno">D</div>
+                <div class="shift-dot night-dot ${nightActive ? 'active' : ''}" data-date="${dk}" data-shift="night" title="Noturno">N</div>
+            </div>
+        </div>`;
+    }
+
+    container.innerHTML = html;
+
+    container.querySelectorAll('.shift-dot').forEach(dot => {
+        dot.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const dk = dot.dataset.date;
+            const shift = dot.dataset.shift;
+            if (!modalFixedMonthlyData[dk]) modalFixedMonthlyData[dk] = {};
+            modalFixedMonthlyData[dk][shift] = !modalFixedMonthlyData[dk][shift];
+            if (!modalFixedMonthlyData[dk].day && !modalFixedMonthlyData[dk].night) {
+                delete modalFixedMonthlyData[dk];
+            }
+            dot.classList.toggle('active');
+        });
+    });
+
+    container.querySelectorAll('.cal-day:not(.empty)').forEach(cell => {
+        cell.addEventListener('click', (e) => {
+            if (e.target.classList.contains('shift-dot')) return;
+            const dk = cell.dataset.date;
+            const dayData = modalFixedMonthlyData[dk] || {};
+            const allActive = dayData.day && dayData.night;
+            if (allActive) {
+                delete modalFixedMonthlyData[dk];
+            } else {
+                modalFixedMonthlyData[dk] = { day: true, night: true };
+            }
+            renderFixedMonthlyCalendar();
+        });
+    });
+}
+
+document.getElementById('fixed-prev-month').addEventListener('click', () => {
+    modalFixedMonth--;
+    if (modalFixedMonth < 0) { modalFixedMonth = 11; modalFixedYear--; }
+    renderFixedMonthlyCalendar();
+});
+
+document.getElementById('fixed-next-month').addEventListener('click', () => {
+    modalFixedMonth++;
+    if (modalFixedMonth > 11) { modalFixedMonth = 0; modalFixedYear++; }
+    renderFixedMonthlyCalendar();
+});
+
+// ---- Monthly Day Rules ----
+function rulesMonthKey() {
+    return monthKey(modalRulesYear, modalRulesMonth);
+}
+
+function renderRulesSection() {
+    const mk = rulesMonthKey();
+    document.getElementById('rules-month-label').textContent =
+        `${MONTH_NAMES[modalRulesMonth]} ${modalRulesYear}`;
+
+    const rules = modalRulesData[mk] || [];
+    const container = document.getElementById('rules-list');
+
+    if (rules.length === 0) {
+        container.innerHTML = '<div class="rules-list-empty">Nenhuma regra para este mês. Clique "+ Regra" para adicionar.</div>';
+        return;
+    }
+
+    let html = '';
+    rules.forEach((rule, idx) => {
+        html += `<div class="rule-row" data-idx="${idx}">
+            <select class="rule-dow" data-idx="${idx}">
+                ${DAYS_FULL.map((d, i) => `<option value="${i}" ${i === rule.dayOfWeek ? 'selected' : ''}>${d}</option>`).join('')}
+            </select>
+            <span class="rule-x">×</span>
+            <input type="number" class="rule-count" data-idx="${idx}" min="1" max="5" value="${rule.count}">
+            <select class="rule-shift" data-idx="${idx}">
+                <option value="day" ${rule.shiftType === 'day' ? 'selected' : ''}>Diurno (D)</option>
+                <option value="night" ${rule.shiftType === 'night' ? 'selected' : ''}>Noturno (N)</option>
+                <option value="24h" ${rule.shiftType === '24h' ? 'selected' : ''}>24h (D+N)</option>
+            </select>
+            <button type="button" class="rule-delete" data-idx="${idx}">&times;</button>
+        </div>`;
+    });
+    container.innerHTML = html;
+
+    // Event listeners
+    container.querySelectorAll('.rule-dow').forEach(sel => {
+        sel.addEventListener('change', () => {
+            const mk = rulesMonthKey();
+            modalRulesData[mk][parseInt(sel.dataset.idx)].dayOfWeek = parseInt(sel.value);
+        });
+    });
+    container.querySelectorAll('.rule-count').forEach(inp => {
+        inp.addEventListener('change', () => {
+            const mk = rulesMonthKey();
+            modalRulesData[mk][parseInt(inp.dataset.idx)].count = parseInt(inp.value) || 1;
+        });
+    });
+    container.querySelectorAll('.rule-shift').forEach(sel => {
+        sel.addEventListener('change', () => {
+            const mk = rulesMonthKey();
+            modalRulesData[mk][parseInt(sel.dataset.idx)].shiftType = sel.value;
+        });
+    });
+    container.querySelectorAll('.rule-delete').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const mk = rulesMonthKey();
+            modalRulesData[mk].splice(parseInt(btn.dataset.idx), 1);
+            if (modalRulesData[mk].length === 0) delete modalRulesData[mk];
+            renderRulesSection();
+        });
+    });
+}
+
+document.getElementById('add-rule-btn').addEventListener('click', () => {
+    const mk = rulesMonthKey();
+    if (!modalRulesData[mk]) modalRulesData[mk] = [];
+    modalRulesData[mk].push({ dayOfWeek: 3, shiftType: '24h', count: 1 }); // default: Quinta, 24h, 1x
+    renderRulesSection();
+});
+
+document.getElementById('rules-prev-month').addEventListener('click', () => {
+    modalRulesMonth--;
+    if (modalRulesMonth < 0) { modalRulesMonth = 11; modalRulesYear--; }
+    renderRulesSection();
+});
+document.getElementById('rules-next-month').addEventListener('click', () => {
+    modalRulesMonth++;
+    if (modalRulesMonth > 11) { modalRulesMonth = 0; modalRulesYear++; }
+    renderRulesSection();
+});
+
+// Count how many times a doctor is already assigned on a specific day-of-week + shiftType in a month
+function countMonthlyDowAssignments(docId, year, month, dayOfWeek, shiftType) {
+    let count = 0;
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    for (let d = 1; d <= daysInMonth; d++) {
+        const dt = new Date(year, month, d);
+        if ((dt.getDay() + 6) % 7 !== dayOfWeek) continue;
+
+        const wk = weekKey(getMonday(dt));
+        const weekSched = schedules[wk];
+        if (!weekSched) continue;
+
+        if (shiftType === '24h') {
+            const skDay = shiftKey(dt, 'day');
+            const skNight = shiftKey(dt, 'night');
+            const hasDay = weekSched[skDay] && weekSched[skDay].includes(docId);
+            const hasNight = weekSched[skNight] && weekSched[skNight].includes(docId);
+            if (hasDay && hasNight) count++;
+        } else {
+            const sk = shiftKey(dt, shiftType);
+            if (weekSched[sk] && weekSched[sk].includes(docId)) count++;
+        }
+    }
+    return count;
+}
+
+// Add doctor
+document.getElementById('add-doctor-btn').addEventListener('click', () => {
+    document.getElementById('modal-title').textContent = 'Adicionar Médico';
+    doctorForm.reset();
+    document.getElementById('doctor-id').value = '';
+    document.getElementById('doctor-hours-limit').value = '';
+    setFixedMonthlyMode(false);
+    modalFixedWeeklyMode = 'works';
+    modalFixedBlockedData = {};
+    buildFixedGrid('fixed-schedule-grid', {}, {});
+    document.querySelectorAll('.fixed-mode-toggle .mode-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.mode === 'works');
+    });
+    document.getElementById('fixed-mode-hint').innerHTML = 'Selecione os turnos fixos que repetem todas as semanas. <span style="color:#2980b9">■</span> = faz, <span style="color:#e74c3c">■</span> = bloqueado.';
+    modalFixedMonthlyData = {};
+    modalFixedMonth = new Date().getMonth();
+    modalFixedYear = new Date().getFullYear();
+    modalAvailData = {};
+    modalUnavailData = {};
+    modalVacationData = {};
+    modalAvailMode = 'available';
+    modalAvailMonth = new Date().getMonth();
+    modalAvailYear = new Date().getFullYear();
+    document.querySelectorAll('.avail-mode-toggle:not(.fixed-mode-toggle) .mode-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.mode === 'available');
+    });
+    modalRulesData = {};
+    modalRulesMonth = new Date().getMonth();
+    modalRulesYear = new Date().getFullYear();
+    renderRulesSection();
+    renderMonthlyCalendar();
+    doctorModal.classList.add('open');
+});
+
+// Edit doctor
+window.editDoctor = function(id) {
+    const doc = doctors.find(d => d.id === id);
+    if (!doc) return;
+    document.getElementById('modal-title').textContent = 'Editar Médico';
+    document.getElementById('doctor-id').value = doc.id;
+    document.getElementById('doctor-name').value = doc.name;
+    document.getElementById('doctor-specialty').value = doc.specialty || '';
+    document.getElementById('doctor-phone').value = doc.phone || '';
+    document.getElementById('doctor-email').value = doc.email || '';
+    document.getElementById('doctor-hours-limit').value = doc.monthlyHoursLimit || '';
+
+    const isMonthly = !!doc.fixedMonthly;
+    setFixedMonthlyMode(isMonthly);
+    modalFixedWeeklyMode = 'works'; // always start in works mode for clarity
+    modalFixedBlockedData = JSON.parse(JSON.stringify(doc.fixedBlocked || {}));
+    buildFixedGrid('fixed-schedule-grid', doc.fixedSchedule || {}, doc.fixedBlocked || {});
+    document.querySelectorAll('.fixed-mode-toggle .mode-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.mode === modalFixedWeeklyMode);
+    });
+    document.getElementById('fixed-mode-hint').innerHTML =
+        'Selecione os turnos fixos que repetem todas as semanas. <span style="color:#2980b9">■</span> = faz, <span style="color:#e74c3c">■</span> = bloqueado.';
+    modalFixedMonthlyData = JSON.parse(JSON.stringify(doc.fixedMonthlyData || {}));
+    modalFixedMonth = new Date().getMonth();
+    modalFixedYear = new Date().getFullYear();
+    if (isMonthly) renderFixedMonthlyCalendar();
+
+    modalRulesData = JSON.parse(JSON.stringify(doc.monthlyDayRules || {}));
+    modalRulesMonth = new Date().getMonth();
+    modalRulesYear = new Date().getFullYear();
+    renderRulesSection();
+
+    modalAvailData = JSON.parse(JSON.stringify(doc.monthlyAvailability || {}));
+    modalUnavailData = JSON.parse(JSON.stringify(doc.monthlyUnavailability || {}));
+    modalVacationData = JSON.parse(JSON.stringify(doc.monthlyVacation || {}));
+    modalAvailMode = doc.availMode || 'available';
+    modalAvailMonth = new Date().getMonth();
+    modalAvailYear = new Date().getFullYear();
+    document.querySelectorAll('.avail-mode-toggle:not(.fixed-mode-toggle) .mode-btn').forEach(b => {
+        b.classList.toggle('active', b.dataset.mode === modalAvailMode);
+    });
+    renderMonthlyCalendar();
+    doctorModal.classList.add('open');
+};
+
+// Delete doctor
+window.deleteDoctor = function(id) {
+    const doc = doctors.find(d => d.id === id);
+    if (!doc) return;
+    if (!confirm(`Eliminar ${doc.name}?`)) return;
+    doctors = doctors.filter(d => d.id !== id);
+    Object.keys(schedules).forEach(wk => {
+        Object.keys(schedules[wk]).forEach(sk => {
+            schedules[wk][sk] = schedules[wk][sk].filter(did => did !== id);
+        });
+    });
+    rotations = rotations.filter(r => r.doctorA !== id && r.doctorB !== id);
+    save();
+    renderDoctors();
+    renderRotations();
+    renderSchedule();
+};
+
+// Save doctor
+doctorForm.addEventListener('submit', e => {
+    e.preventDefault();
+    const id = document.getElementById('doctor-id').value || generateId();
+    const hoursLimit = document.getElementById('doctor-hours-limit').value;
+    const isFixedMonthly = fixedMonthlyToggle.checked;
+    const gridData = isFixedMonthly ? { works: {}, blocked: {} } : getFixedGridData('fixed-schedule-grid');
+
+    const docData = {
+        id,
+        name: document.getElementById('doctor-name').value.trim(),
+        specialty: document.getElementById('doctor-specialty').value.trim(),
+        phone: document.getElementById('doctor-phone').value.trim(),
+        email: document.getElementById('doctor-email').value.trim(),
+        monthlyHoursLimit: hoursLimit ? parseInt(hoursLimit) : null,
+        fixedMonthly: isFixedMonthly,
+        fixedSchedule: gridData.works,
+        fixedBlocked: gridData.blocked,
+        fixedMonthlyData: isFixedMonthly ? { ...modalFixedMonthlyData } : {},
+        monthlyDayRules: { ...modalRulesData },
+        monthlyAvailability: { ...modalAvailData },
+        monthlyUnavailability: { ...modalUnavailData },
+        monthlyVacation: { ...modalVacationData },
+        availMode: modalAvailMode,
+    };
+
+    const idx = doctors.findIndex(d => d.id === id);
+    if (idx >= 0) {
+        doctors[idx] = docData;
+    } else {
+        doctors.push(docData);
+    }
+
+    save();
+    renderDoctors();
+    renderSchedule();
+    doctorModal.classList.remove('open');
+});
+
+// Close modals
+[document.getElementById('modal-close'), document.getElementById('modal-cancel')].forEach(el => {
+    el.addEventListener('click', () => doctorModal.classList.remove('open'));
+});
+
+document.getElementById('assign-close').addEventListener('click', () => {
+    document.getElementById('assign-modal').classList.remove('open');
+});
+
+[doctorModal, document.getElementById('assign-modal')].forEach(overlay => {
+    overlay.addEventListener('click', e => {
+        if (e.target === overlay) overlay.classList.remove('open');
+    });
+});
+
+// ---- Hours Summary ----
+let hoursYear = new Date().getFullYear();
+
+function getMonthlyFixedHours(docId, year, month) {
+    const doc = doctors.find(d => d.id === docId);
+    if (!doc) return 0;
+    let hours = 0;
+    Object.keys(schedules).forEach(wk => {
+        const weekSched = schedules[wk];
+        Object.keys(weekSched).forEach(sk => {
+            const parts = sk.split('_');
+            const shiftType = parts.pop();
+            const dateStr = parts.join('_');
+            const d = new Date(dateStr + 'T00:00:00');
+            if (d.getFullYear() === year && d.getMonth() === month) {
+                if (weekSched[sk].includes(docId)) {
+                    if (isFixedForShiftOnDate(doc, d, shiftType)) {
+                        hours += HOURS_PER_SHIFT;
+                    }
+                }
+            }
+        });
+    });
+    return hours;
+}
+
+function getMonthlyExtraHours(docId, year, month) {
+    return getMonthlyTotalHours(docId, year, month) - getMonthlyFixedHours(docId, year, month);
+}
+
+function renderHoursSummary() {
+    document.getElementById('hours-year-label').textContent = `${hoursYear}`;
+    const table = document.getElementById('hours-table');
+
+    if (doctors.length === 0) {
+        table.innerHTML = '<tr><td style="padding:40px;text-align:center;color:#7f8c8d">Nenhum médico registado.</td></tr>';
+        return;
+    }
+
+    const MONTH_SHORT = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+
+    // Header row 1: Doctor | Month names (colspan 2 each) | Acum Extra
+    let html = '<thead><tr>';
+    html += '<th class="doctor-header" rowspan="2">Médico</th>';
+    for (let m = 0; m < 12; m++) {
+        html += `<th class="month-header" colspan="2">${MONTH_SHORT[m]}</th>`;
+    }
+    html += '<th class="accum-header" rowspan="2">Acum.<br>Extra</th>';
+    html += '</tr>';
+
+    // Header row 2: Fixo | Extra for each month
+    html += '<tr>';
+    for (let m = 0; m < 12; m++) {
+        html += '<th class="sub-header sub-fixed">Fixo</th>';
+        html += '<th class="sub-header sub-extra">Extra</th>';
+    }
+    html += '</tr></thead>';
+
+    // Body
+    html += '<tbody>';
+    const totalsFixed = new Array(12).fill(0);
+    const totalsExtra = new Array(12).fill(0);
+    let totalAccum = 0;
+
+    doctors.forEach(doc => {
+        html += '<tr>';
+        html += `<td class="doctor-name">${doc.name}</td>`;
+        let accumExtra = 0;
+
+        for (let m = 0; m < 12; m++) {
+            const fixed = getMonthlyFixedHours(doc.id, hoursYear, m);
+            const extra = getMonthlyExtraHours(doc.id, hoursYear, m);
+            accumExtra += extra;
+            totalsFixed[m] += fixed;
+            totalsExtra[m] += extra;
+
+            const fixedCls = fixed === 0 ? 'fixed-cell zero' : 'fixed-cell';
+            const extraCls = extra === 0 ? 'extra-cell zero' : 'extra-cell has-hours';
+            html += `<td class="${fixedCls}">${fixed}h</td>`;
+            html += `<td class="${extraCls}">${extra}h</td>`;
+        }
+
+        totalAccum += accumExtra;
+        const accumCls = accumExtra === 0 ? 'accum-cell zero' : 'accum-cell';
+        html += `<td class="${accumCls}">${accumExtra}h</td>`;
+        html += '</tr>';
+    });
+    html += '</tbody>';
+
+    // Footer totals
+    html += '<tfoot><tr>';
+    html += '<td class="doctor-name">TOTAL</td>';
+    let totalAccumAll = 0;
+    for (let m = 0; m < 12; m++) {
+        html += `<td class="fixed-cell">${totalsFixed[m]}h</td>`;
+        html += `<td class="extra-cell">${totalsExtra[m]}h</td>`;
+        totalAccumAll += totalsExtra[m];
+    }
+    html += `<td class="accum-cell">${totalAccumAll}h</td>`;
+    html += '</tr></tfoot>';
+
+    table.innerHTML = html;
+}
+
+document.getElementById('hours-prev-year').addEventListener('click', () => {
+    hoursYear--;
+    renderHoursSummary();
+});
+
+document.getElementById('hours-next-year').addEventListener('click', () => {
+    hoursYear++;
+    renderHoursSummary();
+});
+
+// ---- Export / Import ----
+function exportData() {
+    const data = {
+        version: 1,
+        exportDate: new Date().toISOString(),
+        doctors,
+        schedules,
+        rotations
+    };
+    const json = JSON.stringify(data, null, 2);
+    const blob = new Blob([json], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const dateStr = new Date().toISOString().slice(0, 10);
+    a.href = url;
+    a.download = `escalas-chbv-${dateStr}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+    showSaveStatus('Exportado!');
+}
+
+function importData(file) {
+    const reader = new FileReader();
+    reader.onload = function(e) {
+        try {
+            const data = JSON.parse(e.target.result);
+            if (!data.doctors || !data.schedules) {
+                alert('Ficheiro inválido. Deve ser um ficheiro exportado por esta aplicação.');
+                return;
+            }
+            if (!confirm(`Importar dados de ${data.exportDate ? new Date(data.exportDate).toLocaleString('pt-PT') : 'ficheiro'}?\n\nIsto vai substituir TODOS os dados atuais (${doctors.length} médicos → ${data.doctors.length} médicos).`)) {
+                return;
+            }
+            doctors = data.doctors || [];
+            schedules = data.schedules || {};
+            rotations = data.rotations || [];
+            save();
+            renderSchedule();
+            renderDoctors();
+            renderRotations();
+            showSaveStatus('Importado!');
+            alert(`Dados importados com sucesso!\n${doctors.length} médicos, ${rotations.length} rotações.`);
+        } catch (err) {
+            alert('Erro ao ler o ficheiro: ' + err.message);
+        }
+    };
+    reader.readAsText(file);
+}
+
+function showSaveStatus(msg) {
+    const el = document.getElementById('save-status');
+    el.textContent = msg || '✓ Guardado';
+    el.classList.add('saved');
+    setTimeout(() => {
+        el.textContent = '✓ Guardado';
+        el.classList.remove('saved');
+    }, 2000);
+}
+
+document.getElementById('export-btn').addEventListener('click', exportData);
+document.getElementById('import-btn').addEventListener('click', () => {
+    document.getElementById('import-file').click();
+});
+document.getElementById('import-file').addEventListener('change', (e) => {
+    if (e.target.files.length > 0) {
+        importData(e.target.files[0]);
+        e.target.value = ''; // reset so same file can be re-imported
+    }
+});
+
+// ---- Init ----
+renderSchedule();
+renderDoctors();
+renderRotations();
+renderHoursSummary();
