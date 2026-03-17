@@ -314,6 +314,39 @@ function parseDateKey(dk) {
 // A doctor is available on a date+shift if:
 //   1) They have a FIXED shift for that day-of-week + shift, OR
 //   2) Their flexible monthly availability says they can work that date+shift
+function isRuleBasedShift(doc, date, shift) {
+    const year = date.getFullYear();
+    const month = date.getMonth();
+    const mk = monthKey(year, month);
+    const rules = (doc.monthlyDayRules && doc.monthlyDayRules[mk]) || [];
+    const dow = (date.getDay() + 6) % 7;
+
+    for (const rule of rules) {
+        if (rule.dayOfWeek !== dow) continue;
+        const shiftMatch = rule.shiftType === '24h' || rule.shiftType === shift;
+        if (!shiftMatch) continue;
+
+        // Count fully-assigned occurrences STRICTLY BEFORE this date
+        let countBefore = 0;
+        const daysInMonth = new Date(year, month + 1, 0).getDate();
+        for (let d = 1; d <= daysInMonth; d++) {
+            const dt = new Date(year, month, d);
+            if ((dt.getDay() + 6) % 7 !== dow) continue;
+            if (dt >= date) break;
+            if (rule.shiftType === '24h') {
+                const dayAssigned = getAssignedForShift(dt, 'day').includes(doc.id);
+                const nightAssigned = getAssignedForShift(dt, 'night').includes(doc.id);
+                if (dayAssigned && nightAssigned) countBefore++;
+            } else {
+                if (getAssignedForShift(dt, shift).includes(doc.id)) countBefore++;
+            }
+        }
+        // If we haven't yet exhausted the rule count, this shift is rule-based
+        if (countBefore < rule.count) return true;
+    }
+    return false;
+}
+
 function isFixedForShiftOnDate(doc, date, shift) {
     // Check monthly fixed first (day-by-day overrides)
     if (doc.fixedMonthly) {
@@ -324,7 +357,9 @@ function isFixedForShiftOnDate(doc, date, shift) {
     // Weekly repeating pattern (works data)
     const dayIdx = (date.getDay() + 6) % 7; // Mon=0
     const key = `${dayIdx}_${shift}`;
-    return !!(doc.fixedSchedule && doc.fixedSchedule[key]);
+    if (doc.fixedSchedule && doc.fixedSchedule[key]) return true;
+    // Monthly day-of-week rules count as fixed (not extra)
+    return isRuleBasedShift(doc, date, shift);
 }
 
 function isBlockedOnDate(doc, date, shift) {
@@ -485,7 +520,7 @@ function openAssignModal(dk, shift) {
         let hoursHtml = '';
         hoursHtml = `<span class="hours-remaining">${currentExtra}/${extraLimit}h extra</span>`;
 
-        const canAssign = !blocked && !monthlyUnavail && (available || isRotationDoc);
+        const canAssign = !blocked && !monthlyUnavail && !overLimit && (available || isRotationDoc);
         html += `<li class="assign-item ${!canAssign ? 'unavailable' : ''}"
                      data-doc-id="${doc.id}" data-available="${canAssign}">
             <span>${doc.name}${hoursHtml}</span>
