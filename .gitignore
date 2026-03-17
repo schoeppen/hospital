@@ -1,4 +1,4 @@
 .DS_Store
-*.json
-!package.json
-.claude/
+*.log
+__pycache__/
+.env
