@@ -808,7 +808,23 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
     }
 
     // =========================================
-    // PASS 1: Rotation doctors
+    // PASS 1: Fixed-schedule doctors (highest priority)
+    // =========================================
+    dates.forEach(date => {
+        SHIFTS.forEach(shift => {
+            const { arr } = getSk(date, shift);
+            doctors.forEach(doc => {
+                if (isFixedForShiftOnDate(doc, date, shift) && !isMonthlyUnavailable(doc, date, shift)) {
+                    if (!arr.includes(doc.id) && arr.length < DOCTORS_PER_SHIFT) {
+                        arr.push(doc.id);
+                    }
+                }
+            });
+        });
+    });
+
+    // =========================================
+    // PASS 2: Rotation doctors (fill remaining slots)
     // =========================================
     dates.forEach(date => {
         const dayIdx = (date.getDay() + 6) % 7;
@@ -822,22 +838,6 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
                 if (doc && isMonthlyUnavailable(doc, date, shift)) return;
                 if (!arr.includes(docId) && arr.length < DOCTORS_PER_SHIFT) {
                     arr.push(docId);
-                }
-            });
-        });
-    });
-
-    // =========================================
-    // PASS 2: Fixed-schedule doctors
-    // =========================================
-    dates.forEach(date => {
-        SHIFTS.forEach(shift => {
-            const { arr } = getSk(date, shift);
-            doctors.forEach(doc => {
-                if (isFixedForShiftOnDate(doc, date, shift) && !isMonthlyUnavailable(doc, date, shift)) {
-                    if (!arr.includes(doc.id) && arr.length < DOCTORS_PER_SHIFT) {
-                        arr.push(doc.id);
-                    }
                 }
             });
         });
