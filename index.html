@@ -19,6 +19,7 @@
             <nav>
                 <button class="nav-btn active" data-view="schedule">Escala Mensal</button>
                 <button class="nav-btn" data-view="doctors">Médicos</button>
+                <button class="nav-btn" data-view="terceiros">Tarefeiros</button>
                 <button class="nav-btn" data-view="rotations">Rotações</button>
                 <button class="nav-btn" data-view="hours">Resumo Horas</button>
             </nav>
@@ -56,6 +57,15 @@
                 <button id="add-doctor-btn" class="btn btn-primary">+ Adicionar Médico</button>
             </div>
             <div class="doctors-list" id="doctors-list"></div>
+        </section>
+
+        <!-- Terceiros View -->
+        <section id="terceiros-view" class="view">
+            <div class="doctors-toolbar">
+                <h2>Tarefeiros</h2>
+                <button id="add-terceiro-btn" class="btn btn-primary">+ Adicionar Tarefeiro</button>
+            </div>
+            <div class="doctors-list" id="terceiros-list"></div>
         </section>
 
         <!-- Rotations View -->
@@ -170,6 +180,13 @@
                     <input type="number" id="doctor-hours-limit" min="0" step="1" placeholder="Ex: 150">
                     <span class="field-hint">Cada turno = 12h. Aplica-se aos turnos extra (flexíveis). Deixe vazio se sem limite.</span>
                 </div>
+                <div class="form-group">
+                    <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                        <input type="checkbox" id="doctor-can24h" style="width:auto;margin:0;">
+                        Pode fazer turnos de 24h (extra)
+                    </label>
+                    <span class="field-hint">Se ativo, o auto-preenchimento prefere atribuir este médico a turnos completos de 24h (diurno + noturno).</span>
+                </div>
 
                 <div id="fixed-schedule-section">
                     <div class="fixed-header-row">
@@ -232,6 +249,55 @@
 
                 <div class="form-actions">
                     <button type="button" class="btn" id="modal-cancel">Cancelar</button>
+                    <button type="submit" class="btn btn-primary">Guardar</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Terceiro Modal -->
+    <div class="modal-overlay" id="terceiro-modal">
+        <div class="modal modal-lg">
+            <div class="modal-header">
+                <h3 id="terc-modal-title">Adicionar Tarefeiro</h3>
+                <button class="modal-close" id="terc-modal-close">&times;</button>
+            </div>
+            <form id="terceiro-form">
+                <input type="hidden" id="terc-id">
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="terc-name">Nome Completo</label>
+                        <input type="text" id="terc-name" required placeholder="Dr. / Dra.">
+                    </div>
+                    <div class="form-group">
+                        <label for="terc-specialty">Especialidade</label>
+                        <input type="text" id="terc-specialty" placeholder="Ex: Medicina Interna">
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label for="terc-phone">Telefone</label>
+                        <input type="tel" id="terc-phone" placeholder="Ex: 912 345 678">
+                    </div>
+                    <div class="form-group">
+                        <label for="terc-email">Email</label>
+                        <input type="email" id="terc-email" placeholder="email@exemplo.pt">
+                    </div>
+                </div>
+                <div id="terc-availability-section">
+                    <h4>Disponibilidade Mensal</h4>
+                    <p class="help-text">Clique nos dias em que o médico <strong>pode</strong> trabalhar. Clique no dia para marcar/desmarcar ambos os turnos, ou clique em D/N individualmente.</p>
+                    <div class="avail-controls">
+                        <div class="month-nav">
+                            <button type="button" class="btn btn-icon btn-sm" id="terc-avail-prev-month">◀</button>
+                            <span id="terc-avail-month-label" style="font-weight:600;font-size:14px"></span>
+                            <button type="button" class="btn btn-icon btn-sm" id="terc-avail-next-month">▶</button>
+                        </div>
+                    </div>
+                    <div class="monthly-calendar" id="terc-monthly-calendar"></div>
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn" id="terc-modal-cancel">Cancelar</button>
                     <button type="submit" class="btn btn-primary">Guardar</button>
                 </div>
             </form>

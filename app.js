@@ -17,6 +17,7 @@ const MONTH_NAMES = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
 let doctors = JSON.parse(localStorage.getItem('chbv_doctors') || '[]');
 let schedules = JSON.parse(localStorage.getItem('chbv_schedules') || '{}');
 let rotations = JSON.parse(localStorage.getItem('chbv_rotations') || '[]');
+let terceiros = JSON.parse(localStorage.getItem('chbv_terceiros') || '[]');
 let currentWeekStart = getMonday(new Date());
 let currentSchedMonth = new Date().getMonth();
 let currentSchedYear = new Date().getFullYear();
@@ -36,6 +37,11 @@ let modalFixedMonthlyData = {};
 let modalFixedWeeklyMode = 'works'; // 'works' or 'blocked'
 let modalFixedBlockedData = {}; // separate store for blocked shifts
 
+// Modal state for terceiro availability calendar
+let modalTercAvailData = {};
+let modalTercAvailMonth = new Date().getMonth();
+let modalTercAvailYear = new Date().getFullYear();
+
 // Modal state for monthly day rules
 let modalRulesMonth = new Date().getMonth();
 let modalRulesYear = new Date().getFullYear();
@@ -45,6 +51,7 @@ function save() {
     localStorage.setItem('chbv_doctors', JSON.stringify(doctors));
     localStorage.setItem('chbv_schedules', JSON.stringify(schedules));
     localStorage.setItem('chbv_rotations', JSON.stringify(rotations));
+    localStorage.setItem('chbv_terceiros', JSON.stringify(terceiros));
     // Update save indicator
     const el = document.getElementById('save-status');
     if (el) {
@@ -247,10 +254,11 @@ function renderSchedule() {
             const rotationDocIds = cellRotations.map(r => getRotationDoctor(r, monday));
 
             assigned.forEach(docId => {
-                const doc = doctors.find(x => x.id === docId);
+                const doc = doctors.find(x => x.id === docId) || terceiros.find(x => x.id === docId);
+                const isTerceiro = !doctors.find(x => x.id === docId) && !!terceiros.find(x => x.id === docId);
                 const isRotation = rotationDocIds.includes(docId);
                 const isFixed = doc && isFixedForShiftOnDate(doc, d, shift);
-                const tagClass = isRotation ? 'rotation-tag' : isFixed ? 'fixed-tag' : '';
+                const tagClass = isRotation ? 'rotation-tag' : isFixed ? 'fixed-tag' : isTerceiro ? 'terceiro-tag' : '';
                 const shortName = doc ? doc.name.split(' ').map((n,i) => i === 0 ? n : n[0] + '.').join(' ') : '?';
                 html += `<div class="doctor-tag ${tagClass}">
                     <span>${shortName}</span>
@@ -527,7 +535,31 @@ function openAssignModal(dk, shift) {
             <span>${badges.join(' ')}</span>
         </li>`;
     });
-    html += '</ul>';
+
+    // Terceiros section
+    const dkTerc = dateKey(date);
+    if (terceiros.length > 0) {
+        html += '<div class="assign-section-label">Tarefeiros</div><ul class="assign-list">';
+        terceiros.sort((a, b) => a.name.localeCompare(b.name)).forEach(t => {
+            if (assigned.includes(t.id)) return;
+            const avail = t.monthlyAvailability || {};
+            const isAvail = avail[dkTerc] && avail[dkTerc][shift];
+            const resting = needsRestAfterNight(t.id, date, shift);
+            const canAssign = isAvail && !resting;
+            const badges = [];
+            if (isAvail) badges.push('<span class="avail-badge yes">Disponível</span>');
+            else badges.push('<span class="avail-badge no">Indisponível</span>');
+            if (resting) badges.push('<span class="avail-badge no">A descansar</span>');
+            html += `<li class="assign-item ${!canAssign ? 'unavailable' : ''}"
+                         data-doc-id="${t.id}" data-available="${canAssign}">
+                <span>${t.name} <span style="font-size:10px;color:#e67e22;font-weight:600">TAREF</span></span>
+                <span>${badges.join(' ')}</span>
+            </li>`;
+        });
+        html += '</ul>';
+    }
+
+    html += '';
 
     content.innerHTML = html;
 
@@ -843,6 +875,88 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
         });
     });
 
+    // Helper: count total days assigned this month for a terceiro (for load balancing)
+    function getTerceiroMonthDays(tercId, dates) {
+        const assigned = new Set();
+        dates.forEach(d => {
+            SHIFTS.forEach(s => {
+                if (getAssignedForShift(d, s).includes(tercId)) assigned.add(dateKey(d));
+            });
+        });
+        return assigned.size;
+    }
+
+    // Helper: check if doctor already works the other weekend day
+    function workedOtherWeekendDay(docId, date) {
+        const dow = date.getDay(); // 0=Sun, 6=Sat
+        if (dow === 6) {
+            const sunday = new Date(date); sunday.setDate(date.getDate() + 1);
+            return SHIFTS.some(s => getAssignedForShift(sunday, s).includes(docId));
+        }
+        if (dow === 0) {
+            const saturday = new Date(date); saturday.setDate(date.getDate() - 1);
+            return SHIFTS.some(s => getAssignedForShift(saturday, s).includes(docId));
+        }
+        return false;
+    }
+
+    // =========================================
+    // PASS 2.7: Terceiros (after fixed, before extra-hours doctors)
+    // =========================================
+    dates.forEach(date => {
+        const dk = dateKey(date);
+        SHIFTS.forEach(shift => {
+            const { arr } = getSk(date, shift);
+            while (arr.length < DOCTORS_PER_SHIFT) {
+                const candidates = terceiros
+                    .filter(t => !arr.includes(t.id))
+                    .filter(t => {
+                        const avail = t.monthlyAvailability || {};
+                        return avail[dk] && avail[dk][shift];
+                    })
+                    .filter(t => !needsRestAfterNight(t.id, date, shift))
+                    .filter(t => !workedOtherWeekendDay(t.id, date))
+                    .map(t => ({ t, days: getTerceiroMonthDays(t.id, dates) }))
+                    .sort((a, b) => a.days - b.days);
+
+                if (candidates.length === 0) break;
+                arr.push(candidates[0].t.id);
+            }
+        });
+    });
+
+    // =========================================
+    // PASS 3a: Prefer 24h assignments for doctors with can24h=true
+    // Fill both day+night slots simultaneously for eligible doctors
+    // =========================================
+    dates.forEach(date => {
+        const { arr: dayArr } = getSk(date, 'day');
+        const { arr: nightArr } = getSk(date, 'night');
+
+        while (dayArr.length < DOCTORS_PER_SHIFT && nightArr.length < DOCTORS_PER_SHIFT) {
+            const candidates = doctors
+                .filter(doc => doc.can24h !== false)
+                .filter(doc => !dayArr.includes(doc.id) && !nightArr.includes(doc.id))
+                .filter(doc => !isBlockedOnDate(doc, date, 'day') && !isBlockedOnDate(doc, date, 'night'))
+                .filter(doc => !isMonthlyUnavailable(doc, date, 'day') && !isMonthlyUnavailable(doc, date, 'night'))
+                .filter(doc => !needsRestAfterNight(doc.id, date, 'day'))
+                .filter(doc => !workedOtherWeekendDay(doc.id, date))
+                .filter(doc => {
+                    const limit = doc.monthlyHoursLimit || 0;
+                    if (limit <= 0) return false;
+                    const extra = getMonthlyExtraHoursForAutoFill(doc, date);
+                    return (extra + 24) <= limit; // needs 24h headroom
+                })
+                .map(doc => ({ doc, extraHours: getMonthlyExtraHoursForAutoFill(doc, date) }))
+                .sort((a, b) => a.extraHours - b.extraHours);
+
+            if (candidates.length === 0) break;
+            const chosen = candidates[0].doc;
+            dayArr.push(chosen.id);
+            nightArr.push(chosen.id);
+        }
+    });
+
     // =========================================
     // PASS 3: Fill remaining slots with flex/extra hours
     // Rules:
@@ -850,6 +964,7 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
     //   - Cannot exceed monthly EXTRA hours limit (monthlyHoursLimit, default 0)
     //   - Fixed shifts don't count towards the extra hours limit
     //   - Prefer doctor with fewer extra hours this month (load balancing)
+    //   - Never schedule a doctor on both Saturday and Sunday
     // =========================================
     dates.forEach(date => {
         SHIFTS.forEach(shift => {
@@ -864,6 +979,8 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
                     .filter(doc => !isMonthlyUnavailable(doc, date, shift))
                     // Rest after night: if worked previous night, skip entire next day
                     .filter(doc => !needsRestAfterNight(doc.id, date, shift))
+                    // Never work both Saturday and Sunday
+                    .filter(doc => !workedOtherWeekendDay(doc.id, date))
                     // Must have extra hours available (limit > 0 and not exceeded)
                     .filter(doc => {
                         const limit = doc.monthlyHoursLimit || 0;
@@ -1482,6 +1599,7 @@ document.getElementById('add-doctor-btn').addEventListener('click', () => {
     doctorForm.reset();
     document.getElementById('doctor-id').value = '';
     document.getElementById('doctor-hours-limit').value = '';
+    document.getElementById('doctor-can24h').checked = true;
     setFixedMonthlyMode(false);
     modalFixedWeeklyMode = 'works';
     modalFixedBlockedData = {};
@@ -1521,6 +1639,7 @@ window.editDoctor = function(id) {
     document.getElementById('doctor-phone').value = doc.phone || '';
     document.getElementById('doctor-email').value = doc.email || '';
     document.getElementById('doctor-hours-limit').value = doc.monthlyHoursLimit || '';
+    document.getElementById('doctor-can24h').checked = doc.can24h !== false;
 
     const isMonthly = !!doc.fixedMonthly;
     setFixedMonthlyMode(isMonthly);
@@ -1588,6 +1707,7 @@ doctorForm.addEventListener('submit', e => {
         phone: document.getElementById('doctor-phone').value.trim(),
         email: document.getElementById('doctor-email').value.trim(),
         monthlyHoursLimit: hoursLimit ? parseInt(hoursLimit) : null,
+        can24h: document.getElementById('doctor-can24h').checked,
         fixedMonthly: isFixedMonthly,
         fixedSchedule: gridData.works,
         fixedBlocked: gridData.blocked,
@@ -1625,6 +1745,204 @@ document.getElementById('assign-close').addEventListener('click', () => {
     overlay.addEventListener('click', e => {
         if (e.target === overlay) overlay.classList.remove('open');
     });
+});
+
+// ---- Terceiros Rendering ----
+function renderTerceiros() {
+    const list = document.getElementById('terceiros-list');
+    if (terceiros.length === 0) {
+        list.innerHTML = `<div class="empty-state">
+            <div class="empty-icon">🩺</div>
+            <p>Nenhum tarefeiro registado.<br>Clique em "Adicionar Tarefeiro" para começar.</p>
+        </div>`;
+        return;
+    }
+
+    const now = new Date();
+    const curMonth = now.getMonth();
+    const curYear = now.getFullYear();
+    const daysInMonth = new Date(curYear, curMonth + 1, 0).getDate();
+
+    let html = '';
+    terceiros.forEach(t => {
+        let availCount = 0;
+        for (let d = 1; d <= daysInMonth; d++) {
+            const dt = new Date(curYear, curMonth, d);
+            const dk = dateKey(dt);
+            const avail = t.monthlyAvailability || {};
+            if (avail[dk] && (avail[dk].day || avail[dk].night)) availCount++;
+        }
+
+        html += `<div class="doctor-card">
+            <div class="doctor-card-header">
+                <div>
+                    <h3>${t.name} <span style="font-size:11px;background:#8e44ad;color:#fff;border-radius:4px;padding:2px 6px;font-weight:600">TAREFEIRO</span></h3>
+                    <span class="specialty">${t.specialty || '—'}</span>
+                </div>
+            </div>
+            <div class="info-row">
+                ${t.phone ? `<span>📞 ${t.phone}</span>` : ''}
+                ${t.email ? `<span>✉ ${t.email}</span>` : ''}
+            </div>
+            <div class="avail-summary">Disponível em ${availCount} dias — ${MONTH_NAMES[curMonth]} ${curYear}</div>
+            <div class="card-actions">
+                <button class="btn btn-sm" onclick="editTerceiro('${t.id}')">Editar</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteTerceiro('${t.id}')">Eliminar</button>
+            </div>
+        </div>`;
+    });
+
+    list.innerHTML = html;
+}
+
+// ---- Terceiro Modal ----
+const terceiroModal = document.getElementById('terceiro-modal');
+const terceiroForm = document.getElementById('terceiro-form');
+
+function renderTercModalCalendar() {
+    const container = document.getElementById('terc-monthly-calendar');
+    const label = document.getElementById('terc-avail-month-label');
+    label.textContent = `${MONTH_NAMES[modalTercAvailMonth]} ${modalTercAvailYear}`;
+
+    const firstDay = new Date(modalTercAvailYear, modalTercAvailMonth, 1);
+    const daysInMonth = new Date(modalTercAvailYear, modalTercAvailMonth + 1, 0).getDate();
+    const startDow = (firstDay.getDay() + 6) % 7;
+
+    let html = '';
+    ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'].forEach(d => {
+        html += `<div class="cal-header">${d}</div>`;
+    });
+    for (let i = 0; i < startDow; i++) html += '<div class="cal-day empty"></div>';
+
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    for (let d = 1; d <= daysInMonth; d++) {
+        const dt = new Date(modalTercAvailYear, modalTercAvailMonth, d);
+        const dk = dateKey(dt);
+        const dow = (dt.getDay() + 6) % 7;
+        const isWeekend = dow >= 5;
+        const isPast = dt < today;
+        const avail = modalTercAvailData[dk] || {};
+        const dayCls = avail.day ? 'avail-yes' : '';
+        const nightCls = avail.night ? 'avail-yes' : '';
+        html += `<div class="cal-day ${isWeekend ? 'weekend' : ''} ${isPast ? 'past' : ''}" data-date="${dk}">
+            <div class="day-num">${d}</div>
+            <div class="day-shifts">
+                <div class="shift-dot day-dot ${dayCls}" data-date="${dk}" data-shift="day" title="Diurno">D</div>
+                <div class="shift-dot night-dot ${nightCls}" data-date="${dk}" data-shift="night" title="Noturno">N</div>
+            </div>
+        </div>`;
+    }
+    container.innerHTML = html;
+
+    container.querySelectorAll('.shift-dot').forEach(dot => {
+        dot.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const dk = dot.dataset.date;
+            const shift = dot.dataset.shift;
+            if (!modalTercAvailData[dk]) modalTercAvailData[dk] = {};
+            if (modalTercAvailData[dk][shift]) {
+                delete modalTercAvailData[dk][shift];
+                if (!modalTercAvailData[dk].day && !modalTercAvailData[dk].night) delete modalTercAvailData[dk];
+            } else {
+                modalTercAvailData[dk][shift] = true;
+            }
+            renderTercModalCalendar();
+        });
+    });
+
+    container.querySelectorAll('.cal-day:not(.empty)').forEach(cell => {
+        cell.addEventListener('click', (e) => {
+            if (e.target.classList.contains('shift-dot')) return;
+            const dk = cell.dataset.date;
+            const d = modalTercAvailData[dk] || {};
+            if (d.day && d.night) {
+                delete modalTercAvailData[dk];
+            } else {
+                modalTercAvailData[dk] = { day: true, night: true };
+            }
+            renderTercModalCalendar();
+        });
+    });
+}
+
+document.getElementById('add-terceiro-btn').addEventListener('click', () => {
+    document.getElementById('terc-modal-title').textContent = 'Adicionar Tarefeiro';
+    terceiroForm.reset();
+    document.getElementById('terc-id').value = '';
+    modalTercAvailData = {};
+    modalTercAvailMonth = new Date().getMonth();
+    modalTercAvailYear = new Date().getFullYear();
+    renderTercModalCalendar();
+    terceiroModal.classList.add('open');
+});
+
+window.editTerceiro = function(id) {
+    const t = terceiros.find(x => x.id === id);
+    if (!t) return;
+    document.getElementById('terc-modal-title').textContent = 'Editar Tarefeiro';
+    document.getElementById('terc-id').value = t.id;
+    document.getElementById('terc-name').value = t.name;
+    document.getElementById('terc-specialty').value = t.specialty || '';
+    document.getElementById('terc-phone').value = t.phone || '';
+    document.getElementById('terc-email').value = t.email || '';
+    modalTercAvailData = JSON.parse(JSON.stringify(t.monthlyAvailability || {}));
+    modalTercAvailMonth = new Date().getMonth();
+    modalTercAvailYear = new Date().getFullYear();
+    renderTercModalCalendar();
+    terceiroModal.classList.add('open');
+};
+
+window.deleteTerceiro = function(id) {
+    const t = terceiros.find(x => x.id === id);
+    if (!t) return;
+    if (!confirm(`Eliminar ${t.name}?`)) return;
+    terceiros = terceiros.filter(x => x.id !== id);
+    Object.keys(schedules).forEach(wk => {
+        Object.keys(schedules[wk]).forEach(sk => {
+            schedules[wk][sk] = schedules[wk][sk].filter(did => did !== id);
+        });
+    });
+    save();
+    renderTerceiros();
+    renderSchedule();
+};
+
+terceiroForm.addEventListener('submit', e => {
+    e.preventDefault();
+    const id = document.getElementById('terc-id').value || generateId();
+    const tData = {
+        id,
+        name: document.getElementById('terc-name').value.trim(),
+        specialty: document.getElementById('terc-specialty').value.trim(),
+        phone: document.getElementById('terc-phone').value.trim(),
+        email: document.getElementById('terc-email').value.trim(),
+        monthlyAvailability: { ...modalTercAvailData },
+    };
+    const idx = terceiros.findIndex(x => x.id === id);
+    if (idx >= 0) terceiros[idx] = tData;
+    else terceiros.push(tData);
+    save();
+    renderTerceiros();
+    renderSchedule();
+    terceiroModal.classList.remove('open');
+});
+
+[document.getElementById('terc-modal-close'), document.getElementById('terc-modal-cancel')].forEach(el => {
+    el.addEventListener('click', () => terceiroModal.classList.remove('open'));
+});
+terceiroModal.addEventListener('click', e => {
+    if (e.target === terceiroModal) terceiroModal.classList.remove('open');
+});
+
+document.getElementById('terc-avail-prev-month').addEventListener('click', () => {
+    modalTercAvailMonth--;
+    if (modalTercAvailMonth < 0) { modalTercAvailMonth = 11; modalTercAvailYear--; }
+    renderTercModalCalendar();
+});
+document.getElementById('terc-avail-next-month').addEventListener('click', () => {
+    modalTercAvailMonth++;
+    if (modalTercAvailMonth > 11) { modalTercAvailMonth = 0; modalTercAvailYear++; }
+    renderTercModalCalendar();
 });
 
 // ---- Hours Summary ----
@@ -1747,6 +2065,7 @@ function exportData() {
         version: 1,
         exportDate: new Date().toISOString(),
         doctors,
+        terceiros,
         schedules,
         rotations
     };
@@ -1777,14 +2096,16 @@ function importData(file) {
                 return;
             }
             doctors = data.doctors || [];
+            terceiros = data.terceiros || [];
             schedules = data.schedules || {};
             rotations = data.rotations || [];
             save();
             renderSchedule();
             renderDoctors();
+            renderTerceiros();
             renderRotations();
             showSaveStatus('Importado!');
-            alert(`Dados importados com sucesso!\n${doctors.length} médicos, ${rotations.length} rotações.`);
+            alert(`Dados importados com sucesso!\n${doctors.length} médicos, ${terceiros.length} terceiros, ${rotations.length} rotações.`);
         } catch (err) {
             alert('Erro ao ler o ficheiro: ' + err.message);
         }
@@ -1816,5 +2137,6 @@ document.getElementById('import-file').addEventListener('change', (e) => {
 // ---- Init ----
 renderSchedule();
 renderDoctors();
+renderTerceiros();
 renderRotations();
 renderHoursSummary();
