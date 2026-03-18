@@ -746,6 +746,14 @@ function needsRestAfterNight(docId, date, shift) {
     return prevNightAssigned.includes(docId);
 }
 
+// Check if assigning a night shift (or 24h) on `date` would conflict with
+// an already-assigned shift on the next day (reverse rest check)
+function hasNextDayConflict(docId, date) {
+    const nextDay = new Date(date);
+    nextDay.setDate(nextDay.getDate() + 1);
+    return SHIFTS.some(s => getAssignedForShift(nextDay, s).includes(docId));
+}
+
 // Check if assigning this doctor to this shift would exceed their monthly hours limit
 // If monthlyHoursLimit is not set (null/undefined/0), assume 0 extra hours allowed
 function wouldExceedMonthlyLimit(doc, date) {
@@ -857,6 +865,10 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
                 if (shifts.some(s => isBlockedOnDate(doc, date, s) || isMonthlyUnavailable(doc, date, s))) return;
                 // Also check rest-after-night rule
                 if (shifts.some(s => needsRestAfterNight(doc.id, date, s))) return;
+                // If assigning night or 24h, check no shifts already exist on next day
+                if (rule.shiftType === 'night' || rule.shiftType === '24h') {
+                    if (hasNextDayConflict(doc.id, date)) return;
+                }
                 if (rule.shiftType === '24h') {
                     const canBoth = shifts.every(s => {
                         const { arr } = getSk(date, s);
@@ -915,6 +927,7 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
                         return avail[dk] && avail[dk][shift];
                     })
                     .filter(t => !needsRestAfterNight(t.id, date, shift))
+                    .filter(t => shift !== 'night' || !hasNextDayConflict(t.id, date))
                     .filter(t => !workedOtherWeekendDay(t.id, date))
                     .map(t => ({ t, days: getTerceiroMonthDays(t.id, dates) }))
                     .sort((a, b) => a.days - b.days);
@@ -940,6 +953,7 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
                 .filter(doc => !isBlockedOnDate(doc, date, 'day') && !isBlockedOnDate(doc, date, 'night'))
                 .filter(doc => !isMonthlyUnavailable(doc, date, 'day') && !isMonthlyUnavailable(doc, date, 'night'))
                 .filter(doc => !needsRestAfterNight(doc.id, date, 'day'))
+                .filter(doc => !hasNextDayConflict(doc.id, date))
                 .filter(doc => !workedOtherWeekendDay(doc.id, date))
                 .filter(doc => {
                     const limit = doc.monthlyHoursLimit || 0;
@@ -979,6 +993,8 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
                     .filter(doc => !isMonthlyUnavailable(doc, date, shift))
                     // Rest after night: if worked previous night, skip entire next day
                     .filter(doc => !needsRestAfterNight(doc.id, date, shift))
+                    // If assigning night shift, don't assign if doctor already has shifts next day
+                    .filter(doc => shift !== 'night' || !hasNextDayConflict(doc.id, date))
                     // Never work both Saturday and Sunday
                     .filter(doc => !workedOtherWeekendDay(doc.id, date))
                     // Must have extra hours available (limit > 0 and not exceeded)
