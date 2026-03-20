@@ -1030,40 +1030,43 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
     //   - Fixed shifts don't count towards the extra hours limit
     //   - Prefer doctor with fewer extra hours this month (load balancing)
     //   - Never schedule a doctor on both Saturday and Sunday
+    //   - Preferência: 1 médico por dia em mais dias > 2 num dia e 0 noutro
+    //     (sub-pass A: garante 1 em cada slot vazio; sub-pass B: completa o 2º)
     // =========================================
+    function pass3Candidates(arr, date, shift) {
+        return doctors
+            .filter(doc => !arr.includes(doc.id))
+            .filter(doc => !isBlockedOnDate(doc, date, shift))
+            .filter(doc => !isMonthlyUnavailable(doc, date, shift))
+            .filter(doc => !needsRestAfterNight(doc.id, date, shift))
+            .filter(doc => shift !== 'night' || !hasNextDayConflict(doc.id, date))
+            .filter(doc => !workedOtherWeekendDay(doc.id, date))
+            .filter(doc => {
+                const limit = doc.monthlyHoursLimit || 0;
+                if (limit <= 0) return false;
+                return !wouldExceedMonthlyLimit(doc, date);
+            })
+            .map(doc => ({ doc, extraHours: getMonthlyExtraHoursForAutoFill(doc, date) }))
+            .sort((a, b) => a.extraHours - b.extraHours);
+    }
+
+    // Sub-pass A: atribuir no máximo 1 médico a cada slot vazio
     dates.forEach(date => {
         SHIFTS.forEach(shift => {
             const { arr } = getSk(date, shift);
+            if (arr.length > 0) return; // já tem pelo menos 1, saltar
+            const candidates = pass3Candidates(arr, date, shift);
+            if (candidates.length > 0) arr.push(candidates[0].doc.id);
+        });
+    });
 
+    // Sub-pass B: completar o 2º médico nos slots que ainda têm menos de DOCTORS_PER_SHIFT
+    dates.forEach(date => {
+        SHIFTS.forEach(shift => {
+            const { arr } = getSk(date, shift);
             while (arr.length < DOCTORS_PER_SHIFT) {
-                const candidates = doctors
-                    .filter(doc => !arr.includes(doc.id))
-                    // Not blocked (weekly)
-                    .filter(doc => !isBlockedOnDate(doc, date, shift))
-                    // Not unavailable (monthly) or on vacation
-                    .filter(doc => !isMonthlyUnavailable(doc, date, shift))
-                    // Rest after night: if worked previous night, skip entire next day
-                    .filter(doc => !needsRestAfterNight(doc.id, date, shift))
-                    // If assigning night shift, don't assign if doctor already has shifts next day
-                    .filter(doc => shift !== 'night' || !hasNextDayConflict(doc.id, date))
-                    // Never work both Saturday and Sunday
-                    .filter(doc => !workedOtherWeekendDay(doc.id, date))
-                    // Must have extra hours available (limit > 0 and not exceeded)
-                    .filter(doc => {
-                        const limit = doc.monthlyHoursLimit || 0;
-                        if (limit <= 0) return false; // No extra hours allowed
-                        return !wouldExceedMonthlyLimit(doc, date);
-                    })
-                    .map(doc => ({
-                        doc,
-                        extraHours: getMonthlyExtraHoursForAutoFill(doc, date),
-                        limit: doc.monthlyHoursLimit || 0
-                    }))
-                    // Sort by: fewest extra hours used (load balancing)
-                    .sort((a, b) => a.extraHours - b.extraHours);
-
+                const candidates = pass3Candidates(arr, date, shift);
                 if (candidates.length === 0) break;
-
                 arr.push(candidates[0].doc.id);
             }
         });
