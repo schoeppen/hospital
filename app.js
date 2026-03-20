@@ -887,6 +887,57 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
         });
     });
 
+    // =========================================
+    // PASS 2.6 — Reposição de Turnos por Indisponibilidade
+    // Regra: férias em dias de horário fixo contam como horas fixas (sem reposição).
+    // Indisponibilidade não-férias gera débito de turnos a repor o mais cedo possível.
+    // =========================================
+
+    // Calcular débito de reposição por médico (apenas indisponibilidade, não férias)
+    const recoveryDebt = {}; // docId -> nº de turnos a repor
+    doctors.forEach(doc => {
+        const unavail = doc.monthlyUnavailability || {};
+        const vacation = doc.monthlyVacation || {};
+        let debt = 0;
+        dates.forEach(date => {
+            const dk = dateKey(date);
+            SHIFTS.forEach(shift => {
+                // Conta apenas se marcado como indisponível E não é férias
+                if (unavail[dk] && unavail[dk][shift] && !(vacation[dk] && vacation[dk][shift])) {
+                    debt++;
+                }
+            });
+        });
+        if (debt > 0) recoveryDebt[doc.id] = debt;
+    });
+
+    // Atribuir turnos de reposição o mais cedo possível (prioridade por maior débito)
+    if (Object.keys(recoveryDebt).length > 0) {
+        dates.forEach(date => {
+            SHIFTS.forEach(shift => {
+                const { arr } = getSk(date, shift);
+                if (arr.length >= DOCTORS_PER_SHIFT) return;
+
+                const candidates = doctors
+                    .filter(doc => (recoveryDebt[doc.id] || 0) > 0)
+                    .filter(doc => !arr.includes(doc.id))
+                    .filter(doc => !isBlockedOnDate(doc, date, shift))
+                    .filter(doc => !isMonthlyUnavailable(doc, date, shift))
+                    .filter(doc => !needsRestAfterNight(doc.id, date, shift))
+                    .filter(doc => shift !== 'night' || !hasNextDayConflict(doc.id, date))
+                    .filter(doc => isFixedForShiftOnDate(doc, date, shift) || isFlexAvailableOnDate(doc, date, shift))
+                    .sort((a, b) => (recoveryDebt[b.id] || 0) - (recoveryDebt[a.id] || 0));
+
+                for (const doc of candidates) {
+                    if (arr.length >= DOCTORS_PER_SHIFT) break;
+                    arr.push(doc.id);
+                    recoveryDebt[doc.id]--;
+                    if (recoveryDebt[doc.id] <= 0) delete recoveryDebt[doc.id];
+                }
+            });
+        });
+    }
+
     // Helper: count total days assigned this month for a terceiro (for load balancing)
     function getTerceiroMonthDays(tercId, dates) {
         const assigned = new Set();
@@ -1964,6 +2015,22 @@ document.getElementById('terc-avail-next-month').addEventListener('click', () =>
 // ---- Hours Summary ----
 let hoursYear = new Date().getFullYear();
 
+function getTheoreticalFixedHours(docId, year, month) {
+    const doc = doctors.find(d => d.id === docId);
+    if (!doc) return 0;
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    let hours = 0;
+    for (let day = 1; day <= daysInMonth; day++) {
+        const date = new Date(year, month, day);
+        SHIFTS.forEach(shift => {
+            if (isFixedForShiftOnDate(doc, date, shift)) {
+                hours += HOURS_PER_SHIFT;
+            }
+        });
+    }
+    return hours;
+}
+
 function getMonthlyFixedHours(docId, year, month) {
     const doc = doctors.find(d => d.id === docId);
     if (!doc) return 0;
@@ -2002,18 +2069,19 @@ function renderHoursSummary() {
 
     const MONTH_SHORT = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
 
-    // Header row 1: Doctor | Month names (colspan 2 each) | Acum Extra
+    // Header row 1: Doctor | Month names (colspan 3 each) | Acum Extra
     let html = '<thead><tr>';
     html += '<th class="doctor-header" rowspan="2">Médico</th>';
     for (let m = 0; m < 12; m++) {
-        html += `<th class="month-header" colspan="2">${MONTH_SHORT[m]}</th>`;
+        html += `<th class="month-header" colspan="3">${MONTH_SHORT[m]}</th>`;
     }
     html += '<th class="accum-header" rowspan="2">Acum.<br>Extra</th>';
     html += '</tr>';
 
-    // Header row 2: Fixo | Extra for each month
+    // Header row 2: Prev | Fixo | Extra for each month
     html += '<tr>';
     for (let m = 0; m < 12; m++) {
+        html += '<th class="sub-header sub-theor">Prev</th>';
         html += '<th class="sub-header sub-fixed">Fixo</th>';
         html += '<th class="sub-header sub-extra">Extra</th>';
     }
@@ -2021,6 +2089,7 @@ function renderHoursSummary() {
 
     // Body
     html += '<tbody>';
+    const totalsTheor = new Array(12).fill(0);
     const totalsFixed = new Array(12).fill(0);
     const totalsExtra = new Array(12).fill(0);
     let totalAccum = 0;
@@ -2031,14 +2100,18 @@ function renderHoursSummary() {
         let accumExtra = 0;
 
         for (let m = 0; m < 12; m++) {
+            const theor = getTheoreticalFixedHours(doc.id, hoursYear, m);
             const fixed = getMonthlyFixedHours(doc.id, hoursYear, m);
             const extra = getMonthlyExtraHours(doc.id, hoursYear, m);
             accumExtra += extra;
+            totalsTheor[m] += theor;
             totalsFixed[m] += fixed;
             totalsExtra[m] += extra;
 
+            const theorCls = theor === 0 ? 'theor-cell zero' : 'theor-cell';
             const fixedCls = fixed === 0 ? 'fixed-cell zero' : 'fixed-cell';
             const extraCls = extra === 0 ? 'extra-cell zero' : 'extra-cell has-hours';
+            html += `<td class="${theorCls}">${theor}h</td>`;
             html += `<td class="${fixedCls}">${fixed}h</td>`;
             html += `<td class="${extraCls}">${extra}h</td>`;
         }
@@ -2055,6 +2128,7 @@ function renderHoursSummary() {
     html += '<td class="doctor-name">TOTAL</td>';
     let totalAccumAll = 0;
     for (let m = 0; m < 12; m++) {
+        html += `<td class="theor-cell">${totalsTheor[m]}h</td>`;
         html += `<td class="fixed-cell">${totalsFixed[m]}h</td>`;
         html += `<td class="extra-cell">${totalsExtra[m]}h</td>`;
         totalAccumAll += totalsExtra[m];

@@ -1329,6 +1329,10 @@ h4 {
     padding: 4px 6px;
 }
 
+.hours-table thead th.sub-theor {
+    background: #1a7a4a;
+}
+
 .hours-table thead th.sub-fixed {
     background: #2471a3;
 }
@@ -1356,6 +1360,12 @@ h4 {
     position: sticky;
     left: 0;
     z-index: 1;
+}
+
+.hours-table tbody td.theor-cell {
+    background: #eafaf1;
+    color: #1a7a4a;
+    font-weight: 500;
 }
 
 .hours-table tbody td.fixed-cell {
@@ -1399,6 +1409,10 @@ h4 {
     font-weight: 700;
     background: #ecf0f1;
     border-top: 2px solid var(--primary);
+}
+
+.hours-table tfoot td.theor-cell {
+    background: #d5f5e3;
 }
 
 .hours-table tfoot td.fixed-cell {
