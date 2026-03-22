@@ -1123,6 +1123,8 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
                         const docId = srcArr[i];
                         const doc = doctors.find(d => d.id === docId);
                         if (!doc) continue;
+                        // Never move a doctor from a fixed shift
+                        if (isFixedForShiftOnDate(doc, srcDate, srcShift)) continue;
                         if (emptyArr.includes(docId)) continue;
                         // Not already working another shift on the target date
                         if (SHIFTS.some(s => s !== shift && getAssignedForShift(date, s).includes(docId))) continue;
