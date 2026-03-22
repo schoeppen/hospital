@@ -13,11 +13,27 @@ const HOURS_PER_SHIFT = 12;
 const MONTH_NAMES = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho',
     'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
 
+// ---- Supabase ----
+const SUPABASE_URL = 'https://gptovrbtiosdfqawwwcb.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdwdG92cmJ0aW9zZGZxYXd3d2NiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQyMTM5MzksImV4cCI6MjA4OTc4OTkzOX0.0nZmLu7SF2elW33fIAthRM0u3-kV8xS_N7iETY60wz4';
+const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+async function loadData() {
+    const { data, error } = await db.from('app_data').select('*');
+    if (error) { console.error('Erro ao carregar dados:', error); return; }
+    data.forEach(row => {
+        if (row.key === 'chbv_doctors') doctors = row.value;
+        if (row.key === 'chbv_schedules') schedules = row.value;
+        if (row.key === 'chbv_rotations') rotations = row.value;
+        if (row.key === 'chbv_terceiros') terceiros = row.value;
+    });
+}
+
 // ---- State ----
-let doctors = JSON.parse(localStorage.getItem('chbv_doctors') || '[]');
-let schedules = JSON.parse(localStorage.getItem('chbv_schedules') || '{}');
-let rotations = JSON.parse(localStorage.getItem('chbv_rotations') || '[]');
-let terceiros = JSON.parse(localStorage.getItem('chbv_terceiros') || '[]');
+let doctors = [];
+let schedules = {};
+let rotations = [];
+let terceiros = [];
 let currentWeekStart = getMonday(new Date());
 let currentSchedMonth = new Date().getMonth();
 let currentSchedYear = new Date().getFullYear();
@@ -48,21 +64,25 @@ let modalRulesYear = new Date().getFullYear();
 let modalRulesData = {}; // { "2026-03": [ {dayOfWeek, shiftType, count}, ... ] }
 
 function save() {
-    localStorage.setItem('chbv_doctors', JSON.stringify(doctors));
-    localStorage.setItem('chbv_schedules', JSON.stringify(schedules));
-    localStorage.setItem('chbv_rotations', JSON.stringify(rotations));
-    localStorage.setItem('chbv_terceiros', JSON.stringify(terceiros));
-    // Update save indicator
     const el = document.getElementById('save-status');
-    if (el) {
-        el.textContent = '✓ Guardado';
-        el.classList.add('saved');
-        setTimeout(() => el.classList.remove('saved'), 2000);
-    }
-    // Refresh hours summary if it's been initialized
-    if (typeof renderHoursSummary === 'function' && document.getElementById('hours-table')) {
-        try { renderHoursSummary(); } catch(e) {}
-    }
+    if (el) { el.textContent = '⏳ A guardar...'; }
+    const entries = [
+        { key: 'chbv_doctors', value: doctors },
+        { key: 'chbv_schedules', value: schedules },
+        { key: 'chbv_rotations', value: rotations },
+        { key: 'chbv_terceiros', value: terceiros },
+    ];
+    db.from('app_data').upsert(entries).then(({ error }) => {
+        if (error) { console.error('Erro ao guardar:', error); if (el) el.textContent = '✗ Erro'; return; }
+        if (el) {
+            el.textContent = '✓ Guardado';
+            el.classList.add('saved');
+            setTimeout(() => el.classList.remove('saved'), 2000);
+        }
+        if (typeof renderHoursSummary === 'function' && document.getElementById('hours-table')) {
+            try { renderHoursSummary(); } catch(e) {}
+        }
+    });
 }
 
 // ---- Utility ----
@@ -2270,8 +2290,10 @@ document.getElementById('import-file').addEventListener('change', (e) => {
 });
 
 // ---- Init ----
-renderSchedule();
-renderDoctors();
-renderTerceiros();
-renderRotations();
-renderHoursSummary();
+loadData().then(() => {
+    renderSchedule();
+    renderDoctors();
+    renderTerceiros();
+    renderRotations();
+    renderHoursSummary();
+});
