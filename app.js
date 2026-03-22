@@ -1124,6 +1124,8 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
                         const doc = doctors.find(d => d.id === docId);
                         if (!doc) continue;
                         if (emptyArr.includes(docId)) continue;
+                        // Not already working another shift on the target date
+                        if (SHIFTS.some(s => s !== shift && getAssignedForShift(date, s).includes(docId))) continue;
                         if (isBlockedOnDate(doc, date, shift)) continue;
                         if (isMonthlyUnavailable(doc, date, shift)) continue;
                         if (needsRestAfterNight(docId, date, shift)) continue;
