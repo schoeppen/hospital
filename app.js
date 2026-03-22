@@ -1102,27 +1102,41 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
         });
     });
 
-    // Sub-pass C (fallback): preencher slots ainda vazios ignorando limite de horas
-    // Evita turnos com 0 médicos quando todos já esgotaram o limite mensal
+    // Sub-pass C (redistribuição): mover médicos de turnos com 2 para turnos com 0
+    // Nunca ultrapassa limites de horas — apenas redistribui atribuições existentes
     dates.forEach(date => {
         SHIFTS.forEach(shift => {
-            const { arr } = getSk(date, shift);
-            if (arr.length >= DOCTORS_PER_SHIFT) return;
-            const candidates = doctors
-                .filter(doc => !arr.includes(doc.id))
-                .filter(doc => !isBlockedOnDate(doc, date, shift))
-                .filter(doc => !isMonthlyUnavailable(doc, date, shift))
-                .filter(doc => !needsRestAfterNight(doc.id, date, shift))
-                .filter(doc => shift !== 'night' || !hasNextDayConflict(doc.id, date))
-                .filter(doc => !workedOtherWeekendDay(doc.id, date))
-                .map(doc => ({
-                    doc,
-                    extraHours: getMonthlyExtraHoursForAutoFill(doc, date),
-                    availPriority: isFlexAvailableOnDate(doc, date, shift) ? 0 : 1,
-                }))
-                .sort((a, b) => a.availPriority - b.availPriority || a.extraHours - b.extraHours);
-            while (arr.length < DOCTORS_PER_SHIFT && candidates.length > 0) {
-                arr.push(candidates.shift().doc.id);
+            const { arr: emptyArr } = getSk(date, shift);
+            if (emptyArr.length > 0) return; // já tem médico, ignorar
+
+            // Procurar noutros turnos do mês com 2 médicos um candidato movível
+            let moved = false;
+            for (const srcDate of dates) {
+                if (moved) break;
+                for (const srcShift of SHIFTS) {
+                    if (moved) break;
+                    const { arr: srcArr } = getSk(srcDate, srcShift);
+                    if (srcArr.length < DOCTORS_PER_SHIFT) continue; // só mexer em turnos completos
+
+                    // Encontrar um médico deste turno que possa fazer o turno vazio
+                    for (let i = 0; i < srcArr.length; i++) {
+                        const docId = srcArr[i];
+                        const doc = doctors.find(d => d.id === docId);
+                        if (!doc) continue;
+                        if (emptyArr.includes(docId)) continue;
+                        if (isBlockedOnDate(doc, date, shift)) continue;
+                        if (isMonthlyUnavailable(doc, date, shift)) continue;
+                        if (needsRestAfterNight(docId, date, shift)) continue;
+                        if (shift === 'night' && hasNextDayConflict(docId, date)) continue;
+                        if (workedOtherWeekendDay(docId, date)) continue;
+
+                        // Mover: remover da fonte e adicionar ao turno vazio
+                        srcArr.splice(i, 1);
+                        emptyArr.push(docId);
+                        moved = true;
+                        break;
+                    }
+                }
             }
         });
     });
