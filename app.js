@@ -2096,14 +2096,35 @@ function getTheoreticalFixedHours(docId, year, month) {
     if (!doc) return 0;
     const daysInMonth = new Date(year, month + 1, 0).getDate();
     let hours = 0;
+
     for (let day = 1; day <= daysInMonth; day++) {
         const date = new Date(year, month, day);
         SHIFTS.forEach(shift => {
-            if (isFixedForShiftOnDate(doc, date, shift)) {
-                hours += HOURS_PER_SHIFT;
+            // Only count weekly fixed or monthly fixed calendar (not rule-based)
+            // Rule-based shifts are counted separately below to avoid schedule-state dependency
+            if (doc.fixedMonthly) {
+                const fmd = doc.fixedMonthlyData || {};
+                const dk = dateKey(date);
+                if (fmd[dk] && fmd[dk][shift]) hours += HOURS_PER_SHIFT;
+            } else {
+                const dayIdx = (date.getDay() + 6) % 7;
+                const key = `${dayIdx}_${shift}`;
+                if (doc.fixedSchedule && doc.fixedSchedule[key]) hours += HOURS_PER_SHIFT;
             }
         });
     }
+
+    // Add rule-based hours directly from rule counts (independent of schedule state)
+    const mk = monthKey(year, month);
+    const rules = (doc.monthlyDayRules && doc.monthlyDayRules[mk]) || [];
+    rules.forEach(rule => {
+        if (rule.shiftType === '24h') {
+            hours += rule.count * 2 * HOURS_PER_SHIFT;
+        } else {
+            hours += rule.count * HOURS_PER_SHIFT;
+        }
+    });
+
     return hours;
 }
 
