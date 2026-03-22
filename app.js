@@ -1102,6 +1102,31 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
         });
     });
 
+    // Sub-pass C (fallback): preencher slots ainda vazios ignorando limite de horas
+    // Evita turnos com 0 médicos quando todos já esgotaram o limite mensal
+    dates.forEach(date => {
+        SHIFTS.forEach(shift => {
+            const { arr } = getSk(date, shift);
+            if (arr.length >= DOCTORS_PER_SHIFT) return;
+            const candidates = doctors
+                .filter(doc => !arr.includes(doc.id))
+                .filter(doc => !isBlockedOnDate(doc, date, shift))
+                .filter(doc => !isMonthlyUnavailable(doc, date, shift))
+                .filter(doc => !needsRestAfterNight(doc.id, date, shift))
+                .filter(doc => shift !== 'night' || !hasNextDayConflict(doc.id, date))
+                .filter(doc => !workedOtherWeekendDay(doc.id, date))
+                .map(doc => ({
+                    doc,
+                    extraHours: getMonthlyExtraHoursForAutoFill(doc, date),
+                    availPriority: isFlexAvailableOnDate(doc, date, shift) ? 0 : 1,
+                }))
+                .sort((a, b) => a.availPriority - b.availPriority || a.extraHours - b.extraHours);
+            while (arr.length < DOCTORS_PER_SHIFT && candidates.length > 0) {
+                arr.push(candidates.shift().doc.id);
+            }
+        });
+    });
+
     save();
     renderSchedule();
 });
