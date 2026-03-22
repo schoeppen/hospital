@@ -1066,8 +1066,13 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
                 if (limit <= 0) return false;
                 return !wouldExceedMonthlyLimit(doc, date);
             })
-            .map(doc => ({ doc, extraHours: getMonthlyExtraHoursForAutoFill(doc, date) }))
-            .sort((a, b) => a.extraHours - b.extraHours);
+            .map(doc => ({
+                doc,
+                extraHours: getMonthlyExtraHoursForAutoFill(doc, date),
+                // Priority 0 = explicitly available, 1 = no data (neutral)
+                availPriority: isFlexAvailableOnDate(doc, date, shift) ? 0 : 1,
+            }))
+            .sort((a, b) => a.availPriority - b.availPriority || a.extraHours - b.extraHours);
     }
 
     // Sub-pass A: atribuir no máximo 1 médico a cada slot vazio
