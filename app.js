@@ -1032,8 +1032,13 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
                     const extra = getMonthlyExtraHoursForAutoFill(doc, date);
                     return (extra + 24) <= limit; // needs 24h headroom
                 })
-                .map(doc => ({ doc, extraHours: getMonthlyExtraHoursForAutoFill(doc, date) }))
-                .sort((a, b) => a.extraHours - b.extraHours);
+                .map(doc => ({
+                    doc,
+                    extraHours: getMonthlyExtraHoursForAutoFill(doc, date),
+                    // Priority 0 = explicitly available for both shifts, 1 = neutral
+                    availPriority: (isFlexAvailableOnDate(doc, date, 'day') && isFlexAvailableOnDate(doc, date, 'night')) ? 0 : 1,
+                }))
+                .sort((a, b) => a.availPriority - b.availPriority || a.extraHours - b.extraHours);
 
             if (candidates.length === 0) break;
             const chosen = candidates[0].doc;
