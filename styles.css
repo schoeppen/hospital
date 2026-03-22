@@ -1427,6 +1427,69 @@ h4 {
     background: #fad7a0;
 }
 
+.yearly-summary-title {
+    margin-top: 32px;
+    margin-bottom: 8px;
+    font-size: 15px;
+    color: var(--primary);
+    font-weight: 600;
+}
+
+.hours-yearly-wrapper {
+    overflow-x: auto;
+    margin-bottom: 16px;
+}
+
+.hours-yearly-table {
+    border-collapse: collapse;
+    font-size: 13px;
+    background: var(--card);
+    min-width: 320px;
+}
+
+.hours-yearly-table th,
+.hours-yearly-table td {
+    padding: 8px 16px;
+    text-align: center;
+    border: 1px solid #e0e6ed;
+}
+
+.hours-yearly-table thead th.doctor-header {
+    text-align: left;
+    min-width: 160px;
+    background: #1a3c5e;
+    color: white;
+    font-weight: 600;
+}
+
+.hours-yearly-table thead th.sub-theor { background: #1a7a4a; color: white; font-weight: 600; }
+.hours-yearly-table thead th.sub-fixed  { background: #2471a3; color: white; font-weight: 600; }
+.hours-yearly-table thead th.sub-extra  { background: #d4ac0d; color: #2c3e50; font-weight: 600; }
+
+.hours-yearly-table tbody td.doctor-name {
+    text-align: left;
+    font-weight: 600;
+    background: #f8f9fa;
+}
+
+.hours-yearly-table tbody td.theor-cell { background: #eafaf1; color: #1a7a4a; font-weight: 500; }
+.hours-yearly-table tbody td.fixed-cell { background: #eaf2f8; color: #2471a3; font-weight: 500; }
+.hours-yearly-table tbody td.extra-cell { background: #fef9e7; color: #b7950b; font-weight: 500; }
+.hours-yearly-table tbody td.extra-cell.has-hours { color: #7d6608; font-weight: 700; }
+.hours-yearly-table tbody td.zero { color: #bdc3c7; font-weight: 400; }
+
+.hours-yearly-table tbody tr:hover td { filter: brightness(0.97); }
+
+.hours-yearly-table tfoot td {
+    font-weight: 700;
+    border-top: 2px solid var(--primary);
+}
+
+.hours-yearly-table tfoot td.doctor-name { background: #ecf0f1; }
+.hours-yearly-table tfoot td.theor-cell  { background: #d5f5e3; color: #1a7a4a; }
+.hours-yearly-table tfoot td.fixed-cell  { background: #d6eaf8; color: #2471a3; }
+.hours-yearly-table tfoot td.extra-cell  { background: #fcf3cf; color: #7d6608; }
+
 .hours-legend {
     display: flex;
     gap: 24px;

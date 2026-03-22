@@ -2067,6 +2067,8 @@ function renderHoursSummary() {
 
     if (doctors.length === 0) {
         table.innerHTML = '<tr><td style="padding:40px;text-align:center;color:#7f8c8d">Nenhum médico registado.</td></tr>';
+        const yt = document.getElementById('hours-yearly-table');
+        if (yt) yt.innerHTML = '';
         return;
     }
 
@@ -2140,6 +2142,46 @@ function renderHoursSummary() {
     html += '</tr></tfoot>';
 
     table.innerHTML = html;
+
+    // ---- Yearly summary table ----
+    const yearlyTable = document.getElementById('hours-yearly-table');
+    if (!yearlyTable) { console.error('hours-yearly-table not found'); return; }
+    let yHtml = '<thead><tr>';
+    yHtml += '<th class="doctor-header">Médico</th>';
+    yHtml += '<th class="month-header sub-theor">Prev</th>';
+    yHtml += '<th class="month-header sub-fixed">Fixo</th>';
+    yHtml += '<th class="month-header sub-extra">Extra</th>';
+    yHtml += '</tr></thead><tbody>';
+
+    let grandTheor = 0, grandFixed = 0, grandExtra = 0;
+
+    doctors.forEach(doc => {
+        let yearTheor = 0, yearFixed = 0, yearExtra = 0;
+        for (let m = 0; m < 12; m++) {
+            yearTheor += getTheoreticalFixedHours(doc.id, hoursYear, m);
+            yearFixed += getMonthlyFixedHours(doc.id, hoursYear, m);
+            yearExtra += getMonthlyExtraHours(doc.id, hoursYear, m);
+        }
+        grandTheor += yearTheor;
+        grandFixed += yearFixed;
+        grandExtra += yearExtra;
+
+        yHtml += '<tr>';
+        yHtml += `<td class="doctor-name">${doc.name}</td>`;
+        yHtml += `<td class="${yearTheor === 0 ? 'theor-cell zero' : 'theor-cell'}">${yearTheor}h</td>`;
+        yHtml += `<td class="${yearFixed === 0 ? 'fixed-cell zero' : 'fixed-cell'}">${yearFixed}h</td>`;
+        yHtml += `<td class="${yearExtra === 0 ? 'extra-cell zero' : 'extra-cell has-hours'}">${yearExtra}h</td>`;
+        yHtml += '</tr>';
+    });
+
+    yHtml += '</tbody><tfoot><tr>';
+    yHtml += '<td class="doctor-name">TOTAL</td>';
+    yHtml += `<td class="theor-cell">${grandTheor}h</td>`;
+    yHtml += `<td class="fixed-cell">${grandFixed}h</td>`;
+    yHtml += `<td class="extra-cell">${grandExtra}h</td>`;
+    yHtml += '</tr></tfoot>';
+
+    yearlyTable.innerHTML = yHtml;
 }
 
 document.getElementById('hours-prev-year').addEventListener('click', () => {
