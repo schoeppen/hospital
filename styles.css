@@ -259,6 +259,42 @@ main {
     text-align: center;
 }
 
+/* Month fade animation */
+.cal-fade-out {
+    opacity: 0;
+    transform: translateY(4px);
+    transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.cal-fade-in {
+    animation: calFadeIn 0.2s ease forwards;
+}
+
+@keyframes calFadeIn {
+    from { opacity: 0; transform: translateY(-4px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Doctor hover card */
+.doc-hover-card {
+    position: absolute;
+    z-index: 9999;
+    background: #2c3e50;
+    color: white;
+    border-radius: 8px;
+    padding: 10px 14px;
+    min-width: 160px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.25);
+    pointer-events: none;
+}
+
+.hc-name { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+.hc-type { font-size: 11px; opacity: 0.7; margin-bottom: 6px; }
+.hc-hours { display: flex; justify-content: space-between; font-size: 11px; margin-bottom: 3px; }
+.hc-limit { opacity: 0.6; }
+.hc-bar { height: 4px; background: rgba(255,255,255,0.2); border-radius: 2px; }
+.hc-bar-fill { height: 100%; border-radius: 2px; transition: width 0.3s; }
+
 .schedule-grid {
     display: grid;
     gap: 1px;

@@ -353,7 +353,14 @@ function renderSchedule() {
                 const isFixed = doc && isFixedForShiftOnDate(doc, d, shift);
                 const tagClass = isRotation ? 'rotation-tag' : isFixed ? 'fixed-tag' : isTerceiro ? 'terceiro-tag' : '';
                 const firstName = doc ? doc.name.split(' ')[0] : '?';
-                html += `<div class="doctor-tag ${tagClass}" title="${doc ? doc.name : ''}">
+                const hoursUsed = isTerceiro ? null : getMonthlyExtraHours(docId, d.getFullYear(), d.getMonth());
+                const hoursLimit = doc ? (doc.monthlyHoursLimit || 0) : 0;
+                const shiftType = isTerceiro ? 'Tarefeiro' : isFixed ? 'Fixo' : 'Extra';
+                html += `<div class="doctor-tag ${tagClass}"
+                    data-fullname="${doc ? doc.name : '?'}"
+                    data-hours-used="${hoursUsed ?? ''}"
+                    data-hours-limit="${hoursLimit}"
+                    data-shift-type="${shiftType}">
                     <span>${firstName}</span>
                     <button class="remove-doc" data-date="${dk}" data-shift="${shift}" data-doc="${docId}">&times;</button>
                 </div>`;
@@ -405,6 +412,27 @@ function renderSchedule() {
             save();
             renderSchedule();
         });
+    });
+
+    // Hover card
+    const hoverCard = document.getElementById('doc-hover-card');
+    grid.querySelectorAll('.doctor-tag').forEach(tag => {
+        tag.addEventListener('mouseenter', e => {
+            const name = tag.dataset.fullname;
+            const used = tag.dataset.hoursUsed;
+            const limit = tag.dataset.hoursLimit;
+            const type = tag.dataset.shiftType;
+            const hoursHtml = used !== '' && limit > 0
+                ? `<div class="hc-hours"><span>${used}h extra usadas</span><span class="hc-limit">/ ${limit}h</span></div>
+                   <div class="hc-bar"><div class="hc-bar-fill" style="width:${Math.min(100, Math.round(used/limit*100))}%;background:${used>limit?'#e74c3c':used/limit>0.8?'#f39c12':'#27ae60'}"></div></div>`
+                : '';
+            hoverCard.innerHTML = `<div class="hc-name">${name}</div><div class="hc-type">${type}</div>${hoursHtml}`;
+            const rect = tag.getBoundingClientRect();
+            hoverCard.style.display = 'block';
+            hoverCard.style.left = `${rect.left + window.scrollX}px`;
+            hoverCard.style.top = `${rect.top + window.scrollY - hoverCard.offsetHeight - 8}px`;
+        });
+        tag.addEventListener('mouseleave', () => { hoverCard.style.display = 'none'; });
     });
 }
 
@@ -1242,17 +1270,22 @@ document.getElementById('clear-week-btn').addEventListener('click', () => {
 });
 
 // ---- Week navigation ----
-document.getElementById('prev-week').addEventListener('click', () => {
-    currentSchedMonth--;
-    if (currentSchedMonth < 0) { currentSchedMonth = 11; currentSchedYear--; }
-    renderSchedule();
-});
+function navigateMonth(delta) {
+    const grid = document.getElementById('schedule-grid');
+    grid.classList.add('cal-fade-out');
+    setTimeout(() => {
+        currentSchedMonth += delta;
+        if (currentSchedMonth < 0) { currentSchedMonth = 11; currentSchedYear--; }
+        if (currentSchedMonth > 11) { currentSchedMonth = 0; currentSchedYear++; }
+        renderSchedule();
+        grid.classList.remove('cal-fade-out');
+        grid.classList.add('cal-fade-in');
+        setTimeout(() => grid.classList.remove('cal-fade-in'), 200);
+    }, 150);
+}
 
-document.getElementById('next-week').addEventListener('click', () => {
-    currentSchedMonth++;
-    if (currentSchedMonth > 11) { currentSchedMonth = 0; currentSchedYear++; }
-    renderSchedule();
-});
+document.getElementById('prev-week').addEventListener('click', () => navigateMonth(-1));
+document.getElementById('next-week').addEventListener('click', () => navigateMonth(1));
 
 // ---- Doctors Rendering ----
 function renderDoctors() {
