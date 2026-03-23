@@ -298,7 +298,7 @@ document.querySelectorAll('.nav-btn').forEach(btn => {
     });
 });
 
-// ---- Schedule Rendering (Monthly — transposed: rows=days, cols=shifts) ----
+// ---- Schedule Rendering (Calendar grid — 7 columns Mon→Sun) ----
 function renderSchedule() {
     const grid = document.getElementById('schedule-grid');
     const dates = getMonthDates();
@@ -306,46 +306,45 @@ function renderSchedule() {
     document.getElementById('week-label').textContent =
         `${MONTH_NAMES[currentSchedMonth]} ${currentSchedYear}`;
 
-    // 3 columns: day label | Diurno | Noturno
-    grid.style.gridTemplateColumns = 'auto 1fr 1fr';
+    grid.style.gridTemplateColumns = 'repeat(7, 1fr)';
 
-    let html = '';
     const todayStr = new Date().toDateString();
 
-    // Header row
-    html += '<div class="grid-header grid-corner"></div>';
-    SHIFTS.forEach(shift => {
-        html += `<div class="grid-header shift-col-header ${shift}">
-            ${SHIFT_LABELS[shift]}<small>${SHIFT_TIMES[shift]}</small>
-        </div>`;
-    });
+    // Day-of-week headers
+    let html = DAYS.map(d =>
+        `<div class="grid-header cal-dow-header">${d}</div>`
+    ).join('');
 
-    // One row per day
+    // Padding before first day
+    const firstDow = (dates[0].getDay() + 6) % 7;
+    for (let i = 0; i < firstDow; i++) {
+        html += '<div class="cal-empty"></div>';
+    }
+
     dates.forEach(d => {
         const dk = dateKey(d);
         const dow = (d.getDay() + 6) % 7;
         const isToday = d.toDateString() === todayStr;
         const isWeekend = dow >= 5;
+        const monday = getMonday(d);
 
-        // Day label (row header)
-        html += `<div class="day-row-label ${isWeekend ? 'weekend-header' : ''} ${isToday ? 'today-label' : ''}">
-            <span class="day-num">${d.getDate()}</span>
-            <span class="day-name">${DAYS[dow]}</span>
-        </div>`;
+        // Determine overall day status for cell border
+        const dayCounts = SHIFTS.map(s => getAssignedForShift(d, s).length);
+        const dayStatus = dayCounts.some(c => c === 0) ? 'has-empty'
+            : dayCounts.some(c => c < DOCTORS_PER_SHIFT) ? 'has-partial' : 'all-complete';
 
-        // Shift cells
+        html += `<div class="cal-day ${isWeekend ? 'cal-weekend' : ''} ${isToday ? 'cal-today' : ''} ${dayStatus}">
+            <div class="cal-day-num">${d.getDate()}</div>`;
+
         SHIFTS.forEach(shift => {
             const assigned = getAssignedForShift(d, shift);
             const count = assigned.length;
             const statusClass = count >= DOCTORS_PER_SHIFT ? 'complete' : count > 0 ? 'partial' : 'empty';
-            const cellClass = shift === 'day' ? 'day-shift' : 'night-shift';
-
-            html += `<div class="shift-cell ${cellClass} ${statusClass} ${isWeekend ? 'weekend-cell' : ''} ${isToday ? 'today-cell' : ''}" data-date="${dk}" data-shift="${shift}">
-                <div class="status-dot"></div>`;
-
-            const monday = getMonday(d);
             const cellRotations = getRotationsForShift(dow, shift);
             const rotationDocIds = cellRotations.map(r => getRotationDoctor(r, monday));
+
+            html += `<div class="cal-shift-row ${statusClass}" data-date="${dk}" data-shift="${shift}">
+                <span class="cal-shift-label ${shift}">${shift === 'day' ? 'D' : 'N'}</span>`;
 
             assigned.forEach(docId => {
                 const doc = doctors.find(x => x.id === docId) || terceiros.find(x => x.id === docId);
@@ -353,19 +352,21 @@ function renderSchedule() {
                 const isRotation = rotationDocIds.includes(docId);
                 const isFixed = doc && isFixedForShiftOnDate(doc, d, shift);
                 const tagClass = isRotation ? 'rotation-tag' : isFixed ? 'fixed-tag' : isTerceiro ? 'terceiro-tag' : '';
-                const shortName = doc ? doc.name.split(' ').map((n,i) => i === 0 ? n : n[0] + '.').join(' ') : '?';
+                const firstName = doc ? doc.name.split(' ')[0] : '?';
                 html += `<div class="doctor-tag ${tagClass}" title="${doc ? doc.name : ''}">
-                    <span>${shortName}</span>
+                    <span>${firstName}</span>
                     <button class="remove-doc" data-date="${dk}" data-shift="${shift}" data-doc="${docId}">&times;</button>
                 </div>`;
             });
 
             if (count < DOCTORS_PER_SHIFT) {
-                html += `<div class="add-slot" data-date="${dk}" data-shift="${shift}">+ Médico</div>`;
+                html += `<div class="add-slot" data-date="${dk}" data-shift="${shift}">+</div>`;
             }
 
             html += '</div>';
         });
+
+        html += '</div>';
     });
 
     grid.innerHTML = html;
@@ -378,8 +379,8 @@ function renderSchedule() {
         });
     });
 
-    // Event: click empty cell
-    grid.querySelectorAll('.shift-cell').forEach(el => {
+    // Event: click shift row
+    grid.querySelectorAll('.cal-shift-row').forEach(el => {
         el.addEventListener('click', () => {
             const dk = el.dataset.date;
             const shift = el.dataset.shift;
