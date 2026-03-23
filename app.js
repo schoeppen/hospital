@@ -63,6 +63,79 @@ let modalRulesMonth = new Date().getMonth();
 let modalRulesYear = new Date().getFullYear();
 let modalRulesData = {}; // { "2026-03": [ {dayOfWeek, shiftType, count}, ... ] }
 
+// ---- History ----
+let lastHistorySaveTime = 0;
+const HISTORY_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+const HISTORY_MAX_DAYS = 30;
+
+async function saveHistory() {
+    const now = Date.now();
+    if (now - lastHistorySaveTime < HISTORY_INTERVAL_MS) return;
+    lastHistorySaveTime = now;
+    await db.from('app_data_history').insert({
+        doctors, schedules, rotations, terceiros
+    });
+    // Delete entries older than 30 days
+    const cutoff = new Date(now - HISTORY_MAX_DAYS * 24 * 60 * 60 * 1000).toISOString();
+    await db.from('app_data_history').delete().lt('saved_at', cutoff);
+}
+
+async function loadHistory() {
+    const { data, error } = await db.from('app_data_history')
+        .select('id, saved_at')
+        .order('saved_at', { ascending: false })
+        .limit(50);
+    if (error) { console.error(error); return []; }
+    return data;
+}
+
+async function restoreHistory(id) {
+    const { data, error } = await db.from('app_data_history')
+        .select('*').eq('id', id).single();
+    if (error || !data) { alert('Erro ao carregar versão.'); return; }
+    // Save current state to history before restoring
+    lastHistorySaveTime = 0;
+    await saveHistory();
+    doctors = data.doctors;
+    schedules = data.schedules;
+    rotations = data.rotations;
+    terceiros = data.terceiros;
+    await db.from('app_data').upsert([
+        { key: 'chbv_doctors', value: doctors },
+        { key: 'chbv_schedules', value: schedules },
+        { key: 'chbv_rotations', value: rotations },
+        { key: 'chbv_terceiros', value: terceiros },
+    ]);
+    renderSchedule(); renderDoctors(); renderTerceiros(); renderRotations(); renderHoursSummary();
+    closeHistoryModal();
+    showSaveStatus('Versão restaurada!');
+}
+
+function openHistoryModal() {
+    const modal = document.getElementById('history-modal');
+    const content = document.getElementById('history-content');
+    content.innerHTML = '<p style="padding:16px;color:#7f8c8d">A carregar...</p>';
+    modal.classList.add('open');
+    loadHistory().then(entries => {
+        if (entries.length === 0) {
+            content.innerHTML = '<p style="padding:16px;color:#7f8c8d">Sem histórico guardado ainda.</p>';
+            return;
+        }
+        content.innerHTML = entries.map(e => {
+            const d = new Date(e.saved_at);
+            const label = d.toLocaleString('pt-PT', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' });
+            return `<div class="history-entry">
+                <span class="history-date">📅 ${label}</span>
+                <button class="btn btn-sm btn-primary" onclick="restoreHistory(${e.id})">Restaurar</button>
+            </div>`;
+        }).join('');
+    });
+}
+
+function closeHistoryModal() {
+    document.getElementById('history-modal').classList.remove('open');
+}
+
 function save() {
     const el = document.getElementById('save-status');
     if (el) { el.textContent = '⏳ A guardar...'; }
@@ -82,6 +155,7 @@ function save() {
         if (typeof renderHoursSummary === 'function' && document.getElementById('hours-table')) {
             try { renderHoursSummary(); } catch(e) {}
         }
+        saveHistory();
     });
 }
 
@@ -2354,6 +2428,7 @@ function showSaveStatus(msg) {
     }, 2000);
 }
 
+document.getElementById('history-btn').addEventListener('click', openHistoryModal);
 document.getElementById('pdf-btn').addEventListener('click', () => window.print());
 document.getElementById('export-btn').addEventListener('click', exportData);
 document.getElementById('import-btn').addEventListener('click', () => {

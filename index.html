@@ -24,6 +24,7 @@
                 <button class="nav-btn" data-view="hours">Resumo Horas</button>
             </nav>
             <div class="data-actions">
+                <button id="history-btn" class="btn btn-sm btn-history" title="Histórico de versões">🕐 Histórico</button>
                 <button id="pdf-btn" class="btn btn-sm btn-pdf" title="Exportar PDF">🖨️ PDF</button>
                 <button id="export-btn" class="btn btn-sm btn-export" title="Exportar dados">💾 Exportar</button>
                 <button id="import-btn" class="btn btn-sm btn-import" title="Importar dados">📂 Importar</button>
@@ -306,6 +307,17 @@
                     <button type="submit" class="btn btn-primary">Guardar</button>
                 </div>
             </form>
+        </div>
+    </div>
+
+    <!-- History Modal -->
+    <div class="modal-overlay" id="history-modal">
+        <div class="modal modal-sm">
+            <div class="modal-header">
+                <h3>Histórico de Versões</h3>
+                <button class="modal-close" onclick="closeHistoryModal()">&times;</button>
+            </div>
+            <div id="history-content" style="max-height:400px;overflow-y:auto;padding:8px 0"></div>
         </div>
     </div>
 
