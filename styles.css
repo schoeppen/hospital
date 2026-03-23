@@ -350,6 +350,22 @@ main {
     background: #e8daef;
 }
 
+.shift-cell.empty {
+    background: #fdecea !important;
+}
+
+.shift-cell.empty:hover {
+    background: #fbd4cf !important;
+}
+
+.shift-cell.partial {
+    background: #fef6e7 !important;
+}
+
+.shift-cell.partial:hover {
+    background: #fdecc8 !important;
+}
+
 .shift-cell .status-dot {
     position: absolute;
     top: 4px;
