@@ -29,13 +29,14 @@ body {
 
 /* Header */
 header {
-    background: var(--primary);
+    background: linear-gradient(135deg, #1a3a5c 0%, #1e4976 100%);
     color: white;
     padding: 0 24px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    box-shadow: 0 2px 12px rgba(0,0,0,0.2);
     position: sticky;
     top: 0;
     z-index: 100;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
 }
 
 .header-content {
@@ -54,17 +55,20 @@ header {
 }
 
 .logo-icon {
-    font-size: 32px;
+    display: flex;
+    align-items: center;
 }
 
 header h1 {
-    font-size: 18px;
-    font-weight: 600;
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: 0.3px;
 }
 
 .subtitle {
-    font-size: 13px;
-    opacity: 0.8;
+    font-size: 12px;
+    opacity: 0.6;
+    letter-spacing: 0.2px;
 }
 
 nav {
@@ -75,23 +79,26 @@ nav {
 .nav-btn {
     background: transparent;
     border: none;
-    color: rgba(255,255,255,0.7);
-    padding: 8px 20px;
-    border-radius: var(--radius);
+    border-bottom: 2px solid transparent;
+    color: rgba(255,255,255,0.6);
+    padding: 8px 16px;
     cursor: pointer;
-    font-size: 14px;
+    font-size: 13px;
     font-weight: 500;
     transition: all 0.2s;
+    border-radius: 0;
+    letter-spacing: 0.2px;
 }
 
 .nav-btn:hover {
-    background: rgba(255,255,255,0.1);
-    color: white;
+    color: rgba(255,255,255,0.9);
+    border-bottom-color: rgba(255,255,255,0.4);
 }
 
 .nav-btn.active {
-    background: rgba(255,255,255,0.2);
     color: white;
+    border-bottom-color: white;
+    font-weight: 600;
 }
 
 .header-content {
