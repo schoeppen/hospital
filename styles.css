@@ -107,6 +107,16 @@ nav {
     gap: 8px;
 }
 
+.btn-pdf {
+    background: rgba(255,255,255,0.15) !important;
+    color: white !important;
+    border: 1px solid rgba(255,255,255,0.3) !important;
+}
+
+.btn-pdf:hover {
+    background: rgba(255,255,255,0.25) !important;
+}
+
 .btn-export {
     background: rgba(255,255,255,0.15) !important;
     color: white !important;
@@ -1557,3 +1567,53 @@ h4 {
 .legend-fixed { background: #2471a3; }
 .legend-extra { background: #d4ac0d; }
 .legend-accum { background: #e67e22; }
+
+/* ============================================================
+   PRINT / PDF
+   ============================================================ */
+@media print {
+    * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+
+    header, nav, .data-actions, .schedule-toolbar button,
+    .schedule-legend, .add-slot, .remove-doc, .modal-overlay { display: none !important; }
+
+    body { background: white; font-size: 11px; }
+
+    main { padding: 0; }
+
+    .view { display: none !important; }
+    #schedule-view { display: block !important; }
+
+    .schedule-grid { box-shadow: none; gap: 0; border: 1px solid #ccc; }
+
+    .grid-header {
+        background: #1a5276 !important;
+        color: white !important;
+        padding: 6px 8px;
+        font-size: 11px;
+    }
+
+    .day-row-label { padding: 3px 8px; font-size: 10px; border-right: 1px solid #ccc; }
+    .day-row-label .day-num { font-size: 11px; }
+
+    .shift-cell { min-height: 24px; padding: 3px 6px; border: 1px solid #eee; }
+
+    .shift-cell.empty { background: #fdecea !important; }
+    .shift-cell.partial { background: #fef6e7 !important; }
+
+    .doctor-tag {
+        font-size: 9px;
+        padding: 1px 5px;
+        border-radius: 8px;
+        border: 1px solid #ccc !important;
+        background: white !important;
+    }
+
+    .doctor-tag.fixed-tag { background: #ebf5fb !important; border-color: #2980b9 !important; }
+
+    .status-dot { display: none; }
+
+    h2 { font-size: 14px; margin-bottom: 6px; }
+
+    @page { size: A4 landscape; margin: 1cm; }
+}

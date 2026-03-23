@@ -2354,6 +2354,7 @@ function showSaveStatus(msg) {
     }, 2000);
 }
 
+document.getElementById('pdf-btn').addEventListener('click', () => window.print());
 document.getElementById('export-btn').addEventListener('click', exportData);
 document.getElementById('import-btn').addEventListener('click', () => {
     document.getElementById('import-file').click();
