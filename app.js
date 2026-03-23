@@ -280,7 +280,7 @@ function renderSchedule() {
                 const isFixed = doc && isFixedForShiftOnDate(doc, d, shift);
                 const tagClass = isRotation ? 'rotation-tag' : isFixed ? 'fixed-tag' : isTerceiro ? 'terceiro-tag' : '';
                 const shortName = doc ? doc.name.split(' ').map((n,i) => i === 0 ? n : n[0] + '.').join(' ') : '?';
-                html += `<div class="doctor-tag ${tagClass}">
+                html += `<div class="doctor-tag ${tagClass}" title="${doc ? doc.name : ''}">
                     <span>${shortName}</span>
                     <button class="remove-doc" data-date="${dk}" data-shift="${shift}" data-doc="${docId}">&times;</button>
                 </div>`;
