@@ -273,24 +273,24 @@ main {
 /* Day row labels (left column) */
 .day-row-label {
     background: var(--card);
-    padding: 8px 12px;
+    padding: 4px 10px;
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     font-weight: 600;
-    font-size: 13px;
+    font-size: 12px;
     border-right: 1px solid var(--border);
     white-space: nowrap;
 }
 
 .day-row-label .day-num {
-    font-size: 16px;
-    min-width: 24px;
+    font-size: 13px;
+    min-width: 20px;
     text-align: right;
 }
 
 .day-row-label .day-name {
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 500;
     color: var(--text-light);
 }
@@ -311,11 +311,15 @@ main {
 
 .shift-cell {
     background: var(--card);
-    padding: 6px 8px;
-    min-height: 50px;
+    padding: 4px 6px;
+    min-height: 32px;
     cursor: pointer;
     transition: all 0.15s;
     position: relative;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 3px;
 }
 
 .shift-cell.weekend-cell {
@@ -348,11 +352,12 @@ main {
 
 .shift-cell .status-dot {
     position: absolute;
-    top: 3px;
-    right: 3px;
-    width: 8px;
-    height: 8px;
+    top: 4px;
+    right: 4px;
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
+    flex-shrink: 0;
 }
 
 .dot-ok, .shift-cell.complete .status-dot {
@@ -368,17 +373,17 @@ main {
 }
 
 .shift-cell .doctor-tag {
-    display: flex;
+    display: inline-flex;
     align-items: center;
-    justify-content: space-between;
+    gap: 3px;
     background: white;
     border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 3px 8px;
-    margin-bottom: 3px;
-    font-size: 12px;
+    border-radius: 12px;
+    padding: 1px 8px 1px 8px;
+    font-size: 11px;
     font-weight: 500;
     position: relative;
+    white-space: nowrap;
 }
 
 .shift-cell .doctor-tag:hover::after {
@@ -411,7 +416,8 @@ main {
 }
 
 .shift-cell .doctor-tag.fixed-tag {
-    border-left: 3px solid var(--primary-light);
+    background: #ebf5fb;
+    border-color: var(--primary-light);
 }
 
 .doctor-tag .remove-doc {
@@ -419,9 +425,15 @@ main {
     border: none;
     color: var(--text-light);
     cursor: pointer;
-    font-size: 14px;
-    padding: 0 2px;
+    font-size: 11px;
+    padding: 0 1px;
     line-height: 1;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+
+.doctor-tag:hover .remove-doc {
+    opacity: 1;
 }
 
 .doctor-tag .remove-doc:hover {
@@ -430,12 +442,17 @@ main {
 
 .shift-cell .add-slot {
     border: 1px dashed var(--border);
-    border-radius: 4px;
-    padding: 4px 8px;
-    font-size: 11px;
+    border-radius: 12px;
+    padding: 1px 8px;
+    font-size: 10px;
     color: var(--text-light);
-    text-align: center;
     cursor: pointer;
+    opacity: 0;
+    transition: opacity 0.15s;
+}
+
+.shift-cell:hover .add-slot {
+    opacity: 1;
 }
 
 .shift-cell .add-slot:hover {
