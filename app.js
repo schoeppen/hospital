@@ -922,9 +922,11 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
         dates.forEach(date => {
             const dk = dateKey(date);
             SHIFTS.forEach(shift => {
-                // Conta apenas se marcado como indisponível E não é férias
+                // Conta apenas se marcado como indisponível, não é férias, E era um turno fixo
                 if (unavail[dk] && unavail[dk][shift] && !(vacation[dk] && vacation[dk][shift])) {
-                    debt++;
+                    if (isFixedForShiftOnDate(doc, date, shift)) {
+                        debt++;
+                    }
                 }
             });
         });
