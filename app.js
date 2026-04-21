@@ -2035,7 +2035,13 @@ function countMonthlyDowAssignments(docId, year, month, dayOfWeek, shiftType) {
             if (hasDay && hasNight) count++;
         } else {
             const sk = shiftKey(dt, shiftType);
-            if (weekSched[sk] && weekSched[sk].includes(docId)) count++;
+            if (weekSched[sk] && weekSched[sk].includes(docId)) {
+                // Don't count if already part of a 24h shift (both day+night assigned)
+                const otherShift = shiftType === 'night' ? 'day' : 'night';
+                const skOther = shiftKey(dt, otherShift);
+                const hasOther = weekSched[skOther] && weekSched[skOther].includes(docId);
+                if (!hasOther) count++;
+            }
         }
     }
     return count;
