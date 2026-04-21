@@ -1424,105 +1424,38 @@ function navigateMonth(delta) {
 // ---- Export Algorithm Rules ----
 document.getElementById('export-rules-btn').addEventListener('click', () => {
     const lines = [];
-    const line = (s = '') => lines.push(s);
-    const title = (s) => { line(); line('═'.repeat(60)); line('  ' + s); line('═'.repeat(60)); };
-    const section = (s) => { line(); line('── ' + s + ' ' + '─'.repeat(Math.max(0, 55 - s.length))); };
-    const item = (s) => line('  • ' + s);
+    const L = (s = '') => lines.push(s);
+    const H = (s) => { L(); L(s); L('-'.repeat(s.length)); };
 
-    line('REGRAS DO ALGORITMO DE AUTO-PREENCHIMENTO');
-    line('Centro Hospitalar do Baixo Vouga — Escala CHBV');
-    line('Gerado em: ' + new Date().toLocaleString('pt-PT'));
-    line('─'.repeat(60));
+    L('REGRAS DO ALGORITMO — ESCALA CHBV');
+    L('Gerado em: ' + new Date().toLocaleString('pt-PT'));
+    L('');
+    L('Cada turno requer 2 médicos | Diurno 08:30–20:30 | Noturno 20:30–08:30 (12h cada)');
+    L('Médicos sem limite de horas extra definido nunca recebem turnos flex.');
 
-    title('ESTRUTURA GERAL');
-    item('Cada turno requer ' + DOCTORS_PER_SHIFT + ' médicos.');
-    item('Cada turno tem duração de ' + HOURS_PER_SHIFT + 'h.');
-    item('Turno Diurno: 08:30 – 20:30');
-    item('Turno Noturno: 20:30 – 08:30');
-    item('O algoritmo percorre o mês completo em 7 passagens por ordem de prioridade.');
+    H('PRIORIDADES (ordem de atribuição)');
+    L('1. Horário Fixo        — atribuído primeiro; indisponibilidade/férias substitui o fixo.');
+    L('2. Rotações            — pares A/B alternam semana a semana; sujeito a regras de descanso.');
+    L('3. Regras mensais      — "X turnos de Y tipo às Z-feiras"; preenche até atingir o número.');
+    L('4. Reposição           — indisponibilidade (não-férias) em dia fixo gera débito a repor no mês.');
+    L('5. Tarefeiros          — só dias com disponibilidade marcada; nunca sáb+dom na mesma semana.');
+    L('6. Turnos 24h          — só médicos com flag "Pode 24h"; só se ambos os slots (D+N) estiverem vazios.');
+    L('7. Flex (extra)        — preenche restantes: 1º um por slot vazio, 2º completa o 2º, 3º redistribui.');
 
-    title('PASSAGEM 1 — Horário Fixo (Prioridade Máxima)');
-    item('Médicos com horário fixo semanal ou mensal são colocados primeiro.');
-    item('Um médico com horário fixo é sempre colocado no turno correspondente.');
-    item('Excepção: indisponibilidade mensal (incluindo férias) substitui o horário fixo.');
-    item('Turnos fixos NÃO contam para o limite de horas extra.');
+    H('REGRAS SEMPRE APLICADAS');
+    L('Descanso pós-noturno   — após noturno, o médico descansa o dia seguinte inteiro (D+N).');
+    L('Conflito seguinte      — não atribui noturno se o médico já tiver turno no dia seguinte.');
+    L('Limite horas extra     — nunca excede o limite mensal; turnos fixos/rotação não contam.');
+    L('Fim-de-semana          — nenhum médico trabalha sábado E domingo na mesma semana.');
 
-    title('PASSAGEM 2 — Rotações');
-    item('Pares de médicos em rotação alternam semana A / semana B num turno específico.');
-    item('A semana de referência define qual médico começa (Médico A = semanas ímpares).');
-    item('Restrições aplicadas:');
-    item('  - Indisponibilidade mensal impede a atribuição.');
-    item('  - Regra de descanso pós-noturno (ver abaixo) é respeitada.');
-    item('  - Conflito com o dia seguinte (ver abaixo) é verificado.');
+    H('DISPONIBILIDADE');
+    L('Disponível   — marcado manualmente; necessário para turnos flex.');
+    L('Indisponível — bloqueia o turno; sobrepõe horário fixo; gera débito de reposição.');
+    L('Férias       — bloqueia o turno; sobrepõe horário fixo; NÃO gera débito.');
+    L('Bloqueado    — definido semanalmente; o médico nunca faz aquele turno naquele dia.');
 
-    title('PASSAGEM 2.5 — Regras Mensais por Dia da Semana');
-    item('Cada médico pode ter regras do tipo "X turnos de Y tipo às Z-feiras em mês M".');
-    item('Exemplos: "2 Quintas 24h", "1 Sexta Noturno".');
-    item('O algoritmo conta as atribuições já feitas e preenche até atingir o número definido.');
-    item('Restrições aplicadas: bloqueios, indisponibilidade, descanso pós-noturno, conflito seguinte.');
-    item('Regras 24h: ambos os turnos (diurno + noturno) devem estar disponíveis.');
-
-    title('PASSAGEM 2.6 — Reposição de Turnos por Indisponibilidade');
-    item('Se um médico esteve indisponível (não-férias) num dia de horário fixo, gera débito.');
-    item('Férias em dias fixos NÃO geram débito (contam como horas fixas normais).');
-    item('O débito é reposto o mais cedo possível no mesmo mês.');
-    item('Prioridade: médicos com maior débito são repostos primeiro.');
-
-    title('PASSAGEM 2.7 — Tarefeiros');
-    item('Tarefeiros são atribuídos após médicos fixos e rotações.');
-    item('Só são colocados nos dias em que têm disponibilidade marcada.');
-    item('Regra de descanso pós-noturno aplicada.');
-    item('Nunca trabalham sábado E domingo na mesma semana.');
-    item('Load-balancing: preferência ao tarefeiro com menos dias atribuídos no mês.');
-
-    title('PASSAGEM 3a — Turnos de 24h (Médicos com flag "Pode fazer 24h")');
-    item('Apenas para médicos com a opção "Pode fazer turnos de 24h" activada.');
-    item('Só actua se ambos os slots (diurno e noturno) do dia estiverem vazios.');
-    item('Requer disponibilidade flex marcada para ambos os turnos.');
-    item('Requer pelo menos 24h de espaço no limite de horas extra.');
-    item('Restrições: descanso pós-noturno, conflito com dia seguinte, sáb+dom.');
-
-    title('PASSAGEM 3 — Preenchimento Flex (Extra)');
-    item('Preenche slots restantes com médicos disponíveis (disponibilidade flexível).');
-    item('Médicos SEM limite de horas extra definido nunca são atribuídos nesta passagem.');
-    item('Sub-passagem A: garante pelo menos 1 médico em cada slot vazio (distribuição ampla).');
-    item('Sub-passagem B: completa o 2º médico nos slots que ficaram com 1.');
-    item('Sub-passagem C: redistribuição — move médicos de turnos com 2 para turnos com 0.');
-    item('Ordenação de candidatos: 1º disponibilidade explícita, 2º menos horas extra usadas.');
-
-    title('REGRAS TRANSVERSAIS');
-
-    section('Descanso Pós-Noturno');
-    item('Após um turno noturno, o médico não pode trabalhar NO DIA SEGUINTE (nenhum turno).');
-    item('Aplica-se a todas as passagens.');
-
-    section('Conflito com Dia Seguinte');
-    item('Antes de atribuir um turno noturno, verifica-se se o médico já tem turno no dia seguinte.');
-    item('Se sim, o turno noturno não é atribuído.');
-
-    section('Limite de Horas Extra');
-    item('Cada médico tem um limite mensal de horas extra (flexíveis).');
-    item('Turnos fixos, de rotação, e regras mensais NÃO contam para este limite.');
-    item('O algoritmo nunca excede o limite ao atribuir turnos extra.');
-    item('Se o limite for 0 ou não definido, o médico não recebe turnos extra.');
-
-    section('Sábado + Domingo');
-    item('Nenhum médico (nem tarefeiro) pode trabalhar em ambos os dias do mesmo fim-de-semana.');
-
-    section('Disponibilidade');
-    item('Disponível: dias marcados explicitamente como disponíveis (verde).');
-    item('Indisponível: dias marcados como não pode (vermelho) — sobrepõe horário fixo.');
-    item('Férias: dias de férias — sobrepõe horário fixo mas não gera débito de reposição.');
-    item('Bloqueado (semanal): dias fixos em que o médico nunca trabalha aquele turno.');
-
-    section('Prioridade de Candidatos (Passagem 3)');
-    item('1º — Médicos com disponibilidade explícita marcada para o dia/turno.');
-    item('2º — Médicos sem dados de disponibilidade (neutros, sem marcação).');
-    item('Em empate: médico com menos horas extra acumuladas no mês.');
-
-    line();
-    line('─'.repeat(60));
-    line('Fim do documento.');
+    H('DESEMPATE (Passagem Flex)');
+    L('1º disponibilidade explícita marcada  2º menos horas extra acumuladas no mês.');
 
     const blob = new Blob([lines.join('\n')], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
