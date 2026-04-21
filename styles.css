@@ -266,6 +266,32 @@ main {
     text-align: center;
 }
 
+.view-toggle {
+    display: flex;
+    border: 1px solid #d0d7de;
+    border-radius: 6px;
+    overflow: hidden;
+}
+
+.view-toggle-btn {
+    background: white;
+    border: none;
+    padding: 6px 12px;
+    font-size: 13px;
+    cursor: pointer;
+    color: #555;
+    transition: background 0.15s, color 0.15s;
+}
+
+.view-toggle-btn:hover {
+    background: #f0f4f8;
+}
+
+.view-toggle-btn.active {
+    background: var(--primary);
+    color: white;
+}
+
 /* Month fade animation */
 .cal-fade-out {
     opacity: 0;

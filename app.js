@@ -30,6 +30,7 @@ async function loadData() {
 }
 
 // ---- State ----
+let scheduleViewMode = 'calendar'; // 'calendar' or 'list'
 let doctors = [];
 let schedules = {};
 let rotations = [];
@@ -298,8 +299,13 @@ document.querySelectorAll('.nav-btn').forEach(btn => {
     });
 });
 
-// ---- Schedule Rendering (Calendar grid — 7 columns Mon→Sun) ----
+// ---- Schedule Rendering ----
 function renderSchedule() {
+    if (scheduleViewMode === 'list') { renderScheduleList(); return; }
+    renderScheduleCalendar();
+}
+
+function renderScheduleCalendar() {
     const grid = document.getElementById('schedule-grid');
     const dates = getMonthDates();
 
@@ -399,6 +405,134 @@ function renderSchedule() {
     });
 
     // Event: remove doctor
+    grid.querySelectorAll('.remove-doc').forEach(btn => {
+        btn.addEventListener('click', e => {
+            e.stopPropagation();
+            const dk = btn.dataset.date;
+            const shift = btn.dataset.shift;
+            const docId = btn.dataset.doc;
+            const date = parseDateKey(dk);
+            const sched = getScheduleForDate(date);
+            const sk = shiftKey(date, shift);
+            sched[sk] = (sched[sk] || []).filter(id => id !== docId);
+            save();
+            renderSchedule();
+        });
+    });
+
+    // Hover card
+    const hoverCard = document.getElementById('doc-hover-card');
+    grid.querySelectorAll('.doctor-tag').forEach(tag => {
+        tag.addEventListener('mouseenter', e => {
+            const name = tag.dataset.fullname;
+            const used = tag.dataset.hoursUsed;
+            const limit = tag.dataset.hoursLimit;
+            const type = tag.dataset.shiftType;
+            const hoursHtml = used !== '' && limit > 0
+                ? `<div class="hc-hours"><span>${used}h extra usadas</span><span class="hc-limit">/ ${limit}h</span></div>
+                   <div class="hc-bar"><div class="hc-bar-fill" style="width:${Math.min(100, Math.round(used/limit*100))}%;background:${used>limit?'#e74c3c':used/limit>0.8?'#f39c12':'#27ae60'}"></div></div>`
+                : '';
+            hoverCard.innerHTML = `<div class="hc-name">${name}</div><div class="hc-type">${type}</div>${hoursHtml}`;
+            const rect = tag.getBoundingClientRect();
+            hoverCard.style.display = 'block';
+            hoverCard.style.left = `${rect.left + window.scrollX}px`;
+            hoverCard.style.top = `${rect.top + window.scrollY - hoverCard.offsetHeight - 8}px`;
+        });
+        tag.addEventListener('mouseleave', () => { hoverCard.style.display = 'none'; });
+    });
+}
+
+function renderScheduleList() {
+    const grid = document.getElementById('schedule-grid');
+    const dates = getMonthDates();
+
+    document.getElementById('week-label').textContent =
+        `${MONTH_NAMES[currentSchedMonth]} ${currentSchedYear}`;
+
+    grid.style.gridTemplateColumns = 'auto 1fr 1fr';
+
+    let html = '';
+    const todayStr = new Date().toDateString();
+
+    // Header row
+    html += '<div class="grid-header grid-corner"></div>';
+    SHIFTS.forEach(shift => {
+        html += `<div class="grid-header shift-col-header ${shift}">
+            ${SHIFT_LABELS[shift]}<small>${SHIFT_TIMES[shift]}</small>
+        </div>`;
+    });
+
+    // One row per day
+    dates.forEach(d => {
+        const dk = dateKey(d);
+        const dow = (d.getDay() + 6) % 7;
+        const isToday = d.toDateString() === todayStr;
+        const isWeekend = dow >= 5;
+        const monday = getMonday(d);
+
+        html += `<div class="day-row-label ${isWeekend ? 'weekend-header' : ''} ${isToday ? 'today-label' : ''}">
+            <span class="day-num">${d.getDate()}</span>
+            <span class="day-name">${DAYS[dow]}</span>
+        </div>`;
+
+        SHIFTS.forEach(shift => {
+            const assigned = getAssignedForShift(d, shift);
+            const count = assigned.length;
+            const statusClass = count >= DOCTORS_PER_SHIFT ? 'complete' : count > 0 ? 'partial' : 'empty';
+            const cellClass = shift === 'day' ? 'day-shift' : 'night-shift';
+            const cellRotations = getRotationsForShift(dow, shift);
+            const rotationDocIds = cellRotations.map(r => getRotationDoctor(r, monday));
+
+            html += `<div class="shift-cell ${cellClass} ${statusClass} ${isWeekend ? 'weekend-cell' : ''} ${isToday ? 'today-cell' : ''}" data-date="${dk}" data-shift="${shift}">
+                <div class="status-dot"></div>`;
+
+            assigned.forEach(docId => {
+                const doc = doctors.find(x => x.id === docId) || terceiros.find(x => x.id === docId);
+                const isTerceiro = !doctors.find(x => x.id === docId) && !!terceiros.find(x => x.id === docId);
+                const isRotation = rotationDocIds.includes(docId);
+                const isFixed = doc && isFixedForShiftOnDate(doc, d, shift);
+                const tagClass = isRotation ? 'rotation-tag' : isFixed ? 'fixed-tag' : isTerceiro ? 'terceiro-tag' : '';
+                const hoursUsed = isTerceiro ? null : getMonthlyExtraHours(docId, d.getFullYear(), d.getMonth());
+                const hoursLimit = doc ? (doc.monthlyHoursLimit || 0) : 0;
+                const shiftType = isTerceiro ? 'Tarefeiro' : isFixed ? 'Fixo' : 'Extra';
+                html += `<div class="doctor-tag ${tagClass}"
+                    data-fullname="${doc ? doc.name : '?'}"
+                    data-hours-used="${hoursUsed ?? ''}"
+                    data-hours-limit="${hoursLimit}"
+                    data-shift-type="${shiftType}">
+                    <span>${doc ? doc.name : '?'}</span>
+                    <button class="remove-doc" data-date="${dk}" data-shift="${shift}" data-doc="${docId}">&times;</button>
+                </div>`;
+            });
+
+            if (count < DOCTORS_PER_SHIFT) {
+                html += `<div class="add-slot" data-date="${dk}" data-shift="${shift}">+ Médico</div>`;
+            }
+
+            html += '</div>';
+        });
+    });
+
+    grid.innerHTML = html;
+
+    grid.querySelectorAll('.add-slot').forEach(el => {
+        el.addEventListener('click', e => {
+            e.stopPropagation();
+            openAssignModal(el.dataset.date, el.dataset.shift);
+        });
+    });
+
+    grid.querySelectorAll('.shift-cell').forEach(el => {
+        el.addEventListener('click', () => {
+            const dk = el.dataset.date;
+            const shift = el.dataset.shift;
+            const assigned = getAssignedForShift(parseDateKey(dk), shift);
+            if (assigned.length < DOCTORS_PER_SHIFT) {
+                openAssignModal(dk, shift);
+            }
+        });
+    });
+
     grid.querySelectorAll('.remove-doc').forEach(btn => {
         btn.addEventListener('click', e => {
             e.stopPropagation();
@@ -1286,6 +1420,19 @@ function navigateMonth(delta) {
 
 document.getElementById('prev-week').addEventListener('click', () => navigateMonth(-1));
 document.getElementById('next-week').addEventListener('click', () => navigateMonth(1));
+
+document.getElementById('view-calendar-btn').addEventListener('click', () => {
+    scheduleViewMode = 'calendar';
+    document.getElementById('view-calendar-btn').classList.add('active');
+    document.getElementById('view-list-btn').classList.remove('active');
+    renderSchedule();
+});
+document.getElementById('view-list-btn').addEventListener('click', () => {
+    scheduleViewMode = 'list';
+    document.getElementById('view-list-btn').classList.add('active');
+    document.getElementById('view-calendar-btn').classList.remove('active');
+    renderSchedule();
+});
 
 // ---- Doctors Rendering ----
 function renderDoctors() {
