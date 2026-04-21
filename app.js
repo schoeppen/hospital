@@ -1092,7 +1092,10 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
             shiftRotations.forEach(rot => {
                 const docId = getRotationDoctor(rot, monday);
                 const doc = doctors.find(d => d.id === docId);
-                if (doc && isMonthlyUnavailable(doc, date, shift)) return;
+                if (!doc) return;
+                if (isMonthlyUnavailable(doc, date, shift)) return;
+                if (needsRestAfterNight(docId, date, shift)) return;
+                if (shift === 'night' && hasNextDayConflict(docId, date)) return;
                 if (!arr.includes(docId) && arr.length < DOCTORS_PER_SHIFT) {
                     arr.push(docId);
                 }
@@ -1258,7 +1261,7 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
 
         while (dayArr.length < DOCTORS_PER_SHIFT && nightArr.length < DOCTORS_PER_SHIFT) {
             const candidates = doctors
-                .filter(doc => doc.can24h !== false)
+                .filter(doc => doc.can24h === true)
                 .filter(doc => !dayArr.includes(doc.id) && !nightArr.includes(doc.id))
                 .filter(doc => !isBlockedOnDate(doc, date, 'day') && !isBlockedOnDate(doc, date, 'night'))
                 .filter(doc => !isMonthlyUnavailable(doc, date, 'day') && !isMonthlyUnavailable(doc, date, 'night'))
@@ -2039,7 +2042,7 @@ window.editDoctor = function(id) {
     document.getElementById('doctor-phone').value = doc.phone || '';
     document.getElementById('doctor-email').value = doc.email || '';
     document.getElementById('doctor-hours-limit').value = doc.monthlyHoursLimit || '';
-    document.getElementById('doctor-can24h').checked = doc.can24h !== false;
+    document.getElementById('doctor-can24h').checked = doc.can24h === true;
 
     const isMonthly = !!doc.fixedMonthly;
     setFixedMonthlyMode(isMonthly);
