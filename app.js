@@ -772,8 +772,10 @@ function openAssignModal(dk, shift) {
         const dow = (date.getDay() + 6) % 7;
         const docRules = (doc.monthlyDayRules && doc.monthlyDayRules[mk]) || [];
         const applicableRules = docRules.filter(r => r.dayOfWeek === dow);
+        const modalHas24hRule = applicableRules.some(r => r.shiftType === '24h');
         applicableRules.forEach(rule => {
-            const assigned = countMonthlyDowAssignments(doc.id, date.getFullYear(), date.getMonth(), dow, rule.shiftType);
+            const exclude24h = rule.shiftType !== '24h' && modalHas24hRule;
+            const assigned = countMonthlyDowAssignments(doc.id, date.getFullYear(), date.getMonth(), dow, rule.shiftType, exclude24h);
             const shiftMatch = rule.shiftType === '24h' || rule.shiftType === shift;
             if (shiftMatch) {
                 const label = `${DAYS[dow]} ${rule.shiftType === '24h' ? '24h' : (rule.shiftType === 'day' ? 'D' : 'N')}`;
@@ -1116,9 +1118,11 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
                 .filter(r => r.dayOfWeek === dow)
                 .sort((a, b) => (a.shiftType === '24h' ? 0 : 1) - (b.shiftType === '24h' ? 0 : 1));
 
+            const has24hRule = applicable.some(r => r.shiftType === '24h');
             applicable.forEach(rule => {
+                const exclude24h = rule.shiftType !== '24h' && has24hRule;
                 const assigned = countMonthlyDowAssignments(
-                    doc.id, date.getFullYear(), date.getMonth(), dow, rule.shiftType);
+                    doc.id, date.getFullYear(), date.getMonth(), dow, rule.shiftType, exclude24h);
                 if (assigned >= rule.count) return;
 
                 const shifts = rule.shiftType === '24h' ? ['day', 'night'] : [rule.shiftType];
@@ -2016,7 +2020,7 @@ document.getElementById('rules-next-month').addEventListener('click', () => {
 });
 
 // Count how many times a doctor is already assigned on a specific day-of-week + shiftType in a month
-function countMonthlyDowAssignments(docId, year, month, dayOfWeek, shiftType) {
+function countMonthlyDowAssignments(docId, year, month, dayOfWeek, shiftType, exclude24h = false) {
     let count = 0;
     const daysInMonth = new Date(year, month + 1, 0).getDate();
     for (let d = 1; d <= daysInMonth; d++) {
@@ -2036,11 +2040,15 @@ function countMonthlyDowAssignments(docId, year, month, dayOfWeek, shiftType) {
         } else {
             const sk = shiftKey(dt, shiftType);
             if (weekSched[sk] && weekSched[sk].includes(docId)) {
-                // Don't count if already part of a 24h shift (both day+night assigned)
-                const otherShift = shiftType === 'night' ? 'day' : 'night';
-                const skOther = shiftKey(dt, otherShift);
-                const hasOther = weekSched[skOther] && weekSched[skOther].includes(docId);
-                if (!hasOther) count++;
+                if (exclude24h) {
+                    // Only count if NOT part of a 24h shift (doctor on both day+night)
+                    const otherShift = shiftType === 'night' ? 'day' : 'night';
+                    const skOther = shiftKey(dt, otherShift);
+                    const hasOther = weekSched[skOther] && weekSched[skOther].includes(docId);
+                    if (!hasOther) count++;
+                } else {
+                    count++;
+                }
             }
         }
     }
