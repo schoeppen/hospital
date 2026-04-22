@@ -1321,6 +1321,8 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
     function pass3Candidates(arr, date, shift) {
         return doctors
             .filter(doc => !arr.includes(doc.id))
+            // Never assign the same doctor to both day and night on the same date
+            .filter(doc => !SHIFTS.some(s => s !== shift && getAssignedForShift(date, s).includes(doc.id)))
             .filter(doc => !isBlockedOnDate(doc, date, shift))
             .filter(doc => !isMonthlyUnavailable(doc, date, shift))
             .filter(doc => !needsRestAfterNight(doc.id, date, shift))
