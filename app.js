@@ -765,10 +765,17 @@ function openAssignModal(dk, shift) {
             badges.push('<span class="avail-badge no">Indisponível (mensal)</span>');
         }
         if (blocked) {
-            badges.push('<span class="avail-badge no">Bloqueado</span>');
+            badges.push('<span class="avail-badge no">Bloqueado (semanal)</span>');
         }
-        if (!available && !isRotationDoc && !blocked && !monthlyUnavail) {
-            badges.push('<span class="avail-badge no">Indisponível</span>');
+        if (needsRestAfterNight(doc.id, date, shift)) {
+            badges.push('<span class="avail-badge no">A descansar (noite anterior)</span>');
+        } else if (shift === 'night' && hasNextDayConflict(doc.id, date)) {
+            badges.push('<span class="avail-badge no">Conflito dia seguinte</span>');
+        }
+        if (!available && !isRotationDoc && !blocked && !monthlyUnavail
+            && !needsRestAfterNight(doc.id, date, shift)
+            && !(shift === 'night' && hasNextDayConflict(doc.id, date))) {
+            badges.push('<span class="avail-badge no">Sem disponibilidade</span>');
         }
         if (overLimit) {
             badges.push('<span class="avail-badge limit-warn">Excede limite</span>');
@@ -796,7 +803,7 @@ function openAssignModal(dk, shift) {
 
         const canAssign = !blocked && !monthlyUnavail && !overLimit && (available || isRotationDoc);
         html += `<li class="assign-item ${!canAssign ? 'unavailable' : ''}"
-                     data-doc-id="${doc.id}" data-available="${canAssign}">
+                     data-doc-id="${doc.id}" data-available="true">
             <span>${doc.name}${hoursHtml}</span>
             <span>${badges.join(' ')}</span>
         </li>`;
@@ -814,11 +821,11 @@ function openAssignModal(dk, shift) {
             const canAssign = isAvail && !resting;
             const badges = [];
             if (isAvail) badges.push('<span class="avail-badge yes">Disponível</span>');
-            else badges.push('<span class="avail-badge no">Indisponível</span>');
-            if (resting) badges.push('<span class="avail-badge no">A descansar</span>');
+            if (isAvail) badges.push('<span class="avail-badge yes">Disponível</span>');
+            else badges.push('<span class="avail-badge no">Sem disponibilidade</span>');
+            if (resting) badges.push('<span class="avail-badge no">A descansar (noite anterior)</span>');
             html += `<li class="assign-item ${!canAssign ? 'unavailable' : ''}"
-                         data-doc-id="${t.id}" data-available="${canAssign}">
-                <span>${t.name} <span style="font-size:10px;color:#e67e22;font-weight:600">TAREF</span></span>
+                         data-doc-id="${t.id}" data-available="true">
                 <span>${badges.join(' ')}</span>
             </li>`;
         });
