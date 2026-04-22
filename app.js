@@ -2426,8 +2426,8 @@ function getTheoreticalFixedHours(docId, year, month) {
     for (let day = 1; day <= daysInMonth; day++) {
         const date = new Date(year, month, day);
         SHIFTS.forEach(shift => {
-            // Only count weekly fixed or monthly fixed calendar (not rule-based)
-            // Rule-based shifts are counted separately below to avoid schedule-state dependency
+            // Skip if doctor is on vacation or unavailable that day
+            if (isMonthlyUnavailable(doc, date, shift)) return;
             if (doc.fixedMonthly) {
                 const fmd = doc.fixedMonthlyData || {};
                 const dk = dateKey(date);
@@ -2440,14 +2440,28 @@ function getTheoreticalFixedHours(docId, year, month) {
         });
     }
 
-    // Add rule-based hours directly from rule counts (independent of schedule state)
+    // Add rule-based hours: iterate actual occurrences of each rule's day-of-week
+    // and subtract those that fall on vacation/unavailability
     const mk = monthKey(year, month);
     const rules = (doc.monthlyDayRules && doc.monthlyDayRules[mk]) || [];
     rules.forEach(rule => {
-        if (rule.shiftType === '24h') {
-            hours += rule.count * 2 * HOURS_PER_SHIFT;
-        } else {
-            hours += rule.count * HOURS_PER_SHIFT;
+        const shifts = rule.shiftType === '24h' ? ['day', 'night'] : [rule.shiftType];
+        // Collect all dates in month matching this rule's day-of-week
+        const matchingDates = [];
+        for (let day = 1; day <= daysInMonth; day++) {
+            const date = new Date(year, month, day);
+            const dow = (date.getDay() + 6) % 7;
+            if (dow === rule.dayOfWeek) matchingDates.push(date);
+        }
+        // Count up to rule.count occurrences, skipping unavailable days
+        let counted = 0;
+        for (const date of matchingDates) {
+            if (counted >= rule.count) break;
+            const unavailable = shifts.some(s => isMonthlyUnavailable(doc, date, s));
+            if (!unavailable) {
+                hours += shifts.length * HOURS_PER_SHIFT;
+                counted++;
+            }
         }
     });
 
