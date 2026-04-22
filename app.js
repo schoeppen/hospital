@@ -612,6 +612,13 @@ function isRuleBasedShift(doc, date, shift) {
     return false;
 }
 
+function isRuleBasedForShiftOnDate(doc, date, shift) {
+    const mk = monthKey(date.getFullYear(), date.getMonth());
+    const rules = (doc.monthlyDayRules && doc.monthlyDayRules[mk]) || [];
+    const dow = (date.getDay() + 6) % 7;
+    return rules.some(r => r.dayOfWeek === dow && (r.shiftType === shift || r.shiftType === '24h'));
+}
+
 function isFixedForShiftOnDate(doc, date, shift) {
     // Check monthly fixed first (day-by-day overrides)
     if (doc.fixedMonthly) {
@@ -1034,7 +1041,7 @@ function getMonthlyExtraHoursForAutoFill(doc, date) {
             const assigned = getAssignedForShift(dt, s);
             if (assigned.includes(doc.id)) {
                 // Only count if NOT a fixed shift
-                if (!isFixedForShiftOnDate(doc, dt, s)) {
+                if (!isFixedForShiftOnDate(doc, dt, s) && !isRuleBasedForShiftOnDate(doc, dt, s)) {
                     extraHours += HOURS_PER_SHIFT;
                 }
             }
@@ -2460,7 +2467,7 @@ function getMonthlyFixedHours(docId, year, month) {
             const d = new Date(dateStr + 'T00:00:00');
             if (d.getFullYear() === year && d.getMonth() === month) {
                 if (weekSched[sk].includes(docId)) {
-                    if (isFixedForShiftOnDate(doc, d, shiftType)) {
+                    if (isFixedForShiftOnDate(doc, d, shiftType) || isRuleBasedForShiftOnDate(doc, d, shiftType)) {
                         hours += HOURS_PER_SHIFT;
                     }
                 }
