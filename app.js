@@ -1048,7 +1048,7 @@ function getMonthlyExtraHoursForAutoFill(doc, date) {
             const assigned = getAssignedForShift(dt, s);
             if (assigned.includes(doc.id)) {
                 // Only count if NOT a fixed shift
-                if (!isFixedForShiftOnDate(doc, dt, s) && !isRuleBasedForShiftOnDate(doc, dt, s)) {
+                if (!isFixedForShiftOnDate(doc, dt, s)) {
                     extraHours += HOURS_PER_SHIFT;
                 }
             }
@@ -1088,7 +1088,7 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
             const { arr } = getSk(date, shift);
             doctors.forEach(doc => {
                 if (isFixedForShiftOnDate(doc, date, shift) && !isMonthlyUnavailable(doc, date, shift)) {
-                    if (!arr.includes(doc.id) && arr.length < DOCTORS_PER_SHIFT) {
+                    if (!arr.includes(doc.id) && arr.length < DOCTORS_PER_SHIFT && !workedOtherWeekendDay(doc.id, date)) {
                         arr.push(doc.id);
                     }
                 }
@@ -1109,9 +1109,12 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
                 const docId = getRotationDoctor(rot, monday);
                 const doc = doctors.find(d => d.id === docId);
                 if (!doc) return;
+                if (isBlockedOnDate(doc, date, shift)) return;
                 if (isMonthlyUnavailable(doc, date, shift)) return;
                 if (needsRestAfterNight(docId, date, shift)) return;
                 if (shift === 'night' && hasNextDayConflict(docId, date)) return;
+                if (workedOtherWeekendDay(docId, date)) return;
+                if (SHIFTS.some(s => s !== shift && getAssignedForShift(date, s).includes(docId))) return;
                 if (!arr.includes(docId) && arr.length < DOCTORS_PER_SHIFT) {
                     arr.push(docId);
                 }
@@ -1154,6 +1157,7 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
                     });
                     if (!canBoth) return;
                 }
+                if (workedOtherWeekendDay(doc.id, date)) return;
 
                 shifts.forEach(s => {
                     const { arr } = getSk(date, s);
@@ -1205,6 +1209,7 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
                     .filter(doc => !isMonthlyUnavailable(doc, date, shift))
                     .filter(doc => !needsRestAfterNight(doc.id, date, shift))
                     .filter(doc => shift !== 'night' || !hasNextDayConflict(doc.id, date))
+                    .filter(doc => !workedOtherWeekendDay(doc.id, date))
                     .filter(doc => isFixedForShiftOnDate(doc, date, shift) || isFlexAvailableOnDate(doc, date, shift))
                     .sort((a, b) => (recoveryDebt[b.id] || 0) - (recoveryDebt[a.id] || 0));
 
@@ -2490,7 +2495,7 @@ function getMonthlyFixedHours(docId, year, month) {
             const d = new Date(dateStr + 'T00:00:00');
             if (d.getFullYear() === year && d.getMonth() === month) {
                 if (weekSched[sk].includes(docId)) {
-                    if (isFixedForShiftOnDate(doc, d, shiftType) || isRuleBasedForShiftOnDate(doc, d, shiftType)) {
+                    if (isFixedForShiftOnDate(doc, d, shiftType)) {
                         hours += HOURS_PER_SHIFT;
                     }
                 }
