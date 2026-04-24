@@ -528,6 +528,7 @@ document.querySelectorAll('.nav-btn').forEach(btn => {
         document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
         document.getElementById(`${btn.dataset.view}-view`).classList.add('active');
         if (btn.dataset.view === 'users') renderUsersAdmin();
+        document.getElementById('pdf-btn').style.display = btn.dataset.view === 'schedule' ? '' : 'none';
     });
 });
 
@@ -2945,7 +2946,94 @@ function showSaveStatus(msg) {
 }
 
 document.getElementById('history-btn').addEventListener('click', openHistoryModal);
-document.getElementById('pdf-btn').addEventListener('click', () => window.print());
+document.getElementById('pdf-btn').addEventListener('click', generatePDF);
+
+function generatePDF() {
+    const year = currentSchedYear;
+    const month = currentSchedMonth;
+    const dates = getMonthDates();
+
+    // Build calendar weeks
+    const firstDow = (dates[0].getDay() + 6) % 7; // 0=Mon
+    const weeks = [];
+    let week = new Array(firstDow).fill(null);
+    dates.forEach(d => {
+        week.push(d);
+        if (week.length === 7) { weeks.push(week); week = []; }
+    });
+    if (week.length) {
+        while (week.length < 7) week.push(null);
+        weeks.push(week);
+    }
+
+    const dayHeaders = ['Seg','Ter','Qua','Qui','Sex','Sáb','Dom'];
+
+    let totalAssigned = 0;
+    let totalSlots = 0;
+
+    const weeksHtml = weeks.map(w => {
+        const cells = w.map(d => {
+            if (!d) return `<td class="pcal-empty"></td>`;
+            const dk = dateKey(d);
+            const dow = (d.getDay() + 6) % 7;
+            const isWeekend = dow >= 5;
+            const isToday = d.toDateString() === new Date().toDateString();
+
+            let shiftsHtml = '';
+            ['day','night'].forEach(shift => {
+                const assigned = getAssignedForShift(d, shift);
+                totalSlots++;
+                if (assigned.length > 0) totalAssigned++;
+                const names = assigned.map(id => {
+                    const doc = doctors.find(x => x.id === id) || terceiros.find(x => x.id === id);
+                    return doc ? doc.name.split(' ').slice(0,2).join(' ') : '?';
+                });
+                const isEmpty = assigned.length === 0;
+                const isPartial = assigned.length > 0 && assigned.length < DOCTORS_PER_SHIFT;
+                const statusCls = isEmpty ? 'pempty' : isPartial ? 'ppartial' : '';
+                shiftsHtml += `<div class="pshift pshift-${shift} ${statusCls}">
+                    <span class="pshift-lbl">${shift === 'day' ? 'D' : 'N'}</span>
+                    <span class="pshift-names">${isEmpty ? '—' : names.join(', ')}</span>
+                </div>`;
+            });
+
+            return `<td class="pcal-day ${isWeekend ? 'pcal-weekend' : ''} ${isToday ? 'pcal-today' : ''}">
+                <div class="pday-num">${d.getDate()}</div>
+                ${shiftsHtml}
+            </td>`;
+        }).join('');
+        return `<tr>${cells}</tr>`;
+    }).join('');
+
+    const filledPct = totalSlots > 0 ? Math.round((totalAssigned / totalSlots) * 100) : 0;
+    const now = new Date().toLocaleDateString('pt-PT');
+
+    const html = `<div class="print-header">
+        <div class="print-logo-wrap">
+            <svg width="32" height="32" viewBox="0 0 36 36" fill="none">
+                <rect width="36" height="36" rx="8" fill="#2563eb"/>
+                <rect x="15" y="8" width="6" height="20" rx="3" fill="white"/>
+                <rect x="8" y="15" width="20" height="6" rx="3" fill="white"/>
+            </svg>
+        </div>
+        <div class="print-title-block">
+            <div class="print-title">Escala de Urgência</div>
+            <div class="print-subtitle">Centro Hospitalar do Baixo Vouga — Hospital de Aveiro</div>
+        </div>
+        <div class="print-month-badge">${MONTH_NAMES[month]} ${year}</div>
+    </div>
+    <table class="pcal">
+        <thead><tr>${dayHeaders.map(h => `<th>${h}</th>`).join('')}</tr></thead>
+        <tbody>${weeksHtml}</tbody>
+    </table>
+    <div class="print-footer">
+        <span>Gerado em ${now}</span>
+        <span>${doctors.length} médicos · ${totalAssigned}/${totalSlots} turnos preenchidos (${filledPct}%)</span>
+    </div>`;
+
+    document.getElementById('print-view').innerHTML = html;
+    window.print();
+}
 document.getElementById('import-file').addEventListener('change', (e) => {
     if (e.target.files.length > 0) {
         importData(e.target.files[0]);

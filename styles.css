@@ -1360,26 +1360,133 @@ h4 {
 /* ============================================================
    PRINT / PDF
    ============================================================ */
+/* ---- Print view (hidden on screen) ---- */
+#print-view { display: none; }
+
 @media print {
+    @page { size: A4 landscape; margin: 1.2cm 1cm; }
     * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
-    header, nav, .data-actions, .schedule-toolbar button,
-    .schedule-legend, .add-slot, .remove-doc, .modal-overlay { display: none !important; }
-    body { background: white; font-size: 11px; }
-    main { padding: 0; }
-    .view { display: none !important; }
-    #schedule-view { display: block !important; }
-    .schedule-grid { box-shadow: none; gap: 0; border: 1px solid #ccc; border-radius: 0; }
-    .grid-header { background: var(--brand-800) !important; color: white !important; padding: 5px 8px; font-size: 11px; }
-    .day-row-label { padding: 3px 8px; font-size: 10px; border-right: 1px solid #ccc; }
-    .shift-cell { min-height: 24px; padding: 3px 6px; border: 1px solid #eee; border-left: 3px solid transparent; }
-    .shift-cell.day-shift   { border-left-color: var(--shift-day)   !important; }
-    .shift-cell.night-shift { border-left-color: var(--shift-night) !important; }
-    .shift-cell.empty   { background: #fef2f2 !important; }
-    .shift-cell.partial { background: #fffbeb !important; }
-    .doctor-tag { font-size: 9px; padding: 1px 5px; border-radius: 8px; background: white !important; border: 1px solid #ccc !important; }
-    .status-dot { display: none; }
-    h2 { font-size: 14px; margin-bottom: 6px; }
-    @page { size: A4 landscape; margin: 1cm; }
+
+    body > *:not(#print-view) { display: none !important; }
+    #print-view {
+        display: block !important;
+        font-family: 'Inter', -apple-system, sans-serif;
+        font-size: 9px;
+        color: #111;
+    }
+
+    /* Header */
+    .print-header {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        margin-bottom: 10px;
+        padding-bottom: 8px;
+        border-bottom: 2px solid #0a1929;
+    }
+    .print-logo-wrap { flex-shrink: 0; }
+    .print-title-block { flex: 1; }
+    .print-title {
+        font-size: 16px;
+        font-weight: 800;
+        color: #0a1929;
+        letter-spacing: -0.3px;
+        line-height: 1.2;
+    }
+    .print-subtitle {
+        font-size: 9px;
+        color: #6b7280;
+        margin-top: 2px;
+        font-weight: 500;
+    }
+    .print-month-badge {
+        font-size: 14px;
+        font-weight: 800;
+        color: #2563eb;
+        text-align: right;
+        letter-spacing: -0.3px;
+    }
+
+    /* Calendar table */
+    .pcal {
+        width: 100%;
+        border-collapse: collapse;
+        table-layout: fixed;
+    }
+    .pcal thead th {
+        background: #0a1929 !important;
+        color: white !important;
+        text-align: center;
+        font-size: 9px;
+        font-weight: 700;
+        padding: 5px 2px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+    }
+    .pcal-day {
+        vertical-align: top;
+        border: 1px solid #e5e7eb;
+        padding: 4px 3px 3px;
+        width: calc(100% / 7);
+    }
+    .pcal-weekend { background: #f9fafb !important; }
+    .pcal-today { background: #eff6ff !important; outline: 2px solid #2563eb; }
+    .pcal-empty { border: 1px solid #f3f4f6; background: #fafafa !important; }
+
+    .pday-num {
+        font-size: 11px;
+        font-weight: 800;
+        color: #111;
+        margin-bottom: 3px;
+        line-height: 1;
+    }
+
+    /* Shifts */
+    .pshift {
+        display: flex;
+        align-items: flex-start;
+        gap: 3px;
+        margin-bottom: 2px;
+        border-radius: 3px;
+        padding: 2px 3px;
+        line-height: 1.3;
+    }
+    .pshift-day  { background: #e0f2fe !important; }
+    .pshift-night { background: #ede9fe !important; }
+    .pshift.pempty { background: #fee2e2 !important; }
+    .pshift.ppartial { background: #fef3c7 !important; }
+
+    .pshift-lbl {
+        font-size: 8px;
+        font-weight: 800;
+        flex-shrink: 0;
+        width: 10px;
+        padding-top: 1px;
+    }
+    .pshift-day  .pshift-lbl { color: #0284c7; }
+    .pshift-night .pshift-lbl { color: #6d28d9; }
+    .pshift.pempty .pshift-lbl { color: #dc2626; }
+
+    .pshift-names {
+        font-size: 8px;
+        color: #374151;
+        font-weight: 500;
+        word-break: break-word;
+        line-height: 1.3;
+    }
+    .pshift.pempty .pshift-names { color: #dc2626; font-style: italic; }
+
+    /* Footer */
+    .print-footer {
+        display: flex;
+        justify-content: space-between;
+        margin-top: 8px;
+        padding-top: 6px;
+        border-top: 1px solid #e5e7eb;
+        font-size: 8px;
+        color: #9ca3af;
+        font-weight: 500;
+    }
 }
 
 /* ================================================================
