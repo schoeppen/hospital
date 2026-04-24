@@ -32,14 +32,7 @@ async function loadData() {
 // ---- Auth State ----
 let currentUser = null;
 let currentRole = null;
-let adminClient = null;
-
-function getAdminClient() {
-    const key = sessionStorage.getItem('sb_admin_key');
-    if (!key) return null;
-    if (!adminClient) adminClient = window.supabase.createClient(SUPABASE_URL, key);
-    return adminClient;
-}
+let suppressAuthChange = false;
 
 // ---- State ----
 let scheduleViewMode = 'calendar'; // 'calendar' or 'list'
@@ -312,6 +305,7 @@ async function initAuth() {
     }
 
     db.auth.onAuthStateChange(async (event, session) => {
+        if (suppressAuthChange) return;
         if (event === 'SIGNED_IN' && session) {
             await onSignIn(session.user);
         } else if (event === 'SIGNED_OUT') {
@@ -325,8 +319,15 @@ async function initAuth() {
 async function onSignIn(user) {
     currentUser = user;
     const { data: profile } = await db.from('profiles').select('role, name').eq('id', user.id).single();
-    currentRole = profile ? profile.role : 'read';
-    const displayName = (profile && profile.name) || user.email;
+    if (!profile) {
+        await db.auth.signOut();
+        showLoginScreen();
+        document.getElementById('login-error').textContent = 'Conta removida ou sem acesso. Contacte o administrador.';
+        document.getElementById('login-error').style.display = 'block';
+        return;
+    }
+    currentRole = profile.role;
+    const displayName = profile.name || user.email;
 
     document.getElementById('user-name-display').textContent = displayName;
     const roleBadge = document.getElementById('user-role-badge');
@@ -391,13 +392,6 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
 // ---- Users Admin ----
 
 async function renderUsersAdmin() {
-    const banner = document.getElementById('service-key-banner');
-    if (sessionStorage.getItem('sb_admin_key')) {
-        banner.style.display = 'none';
-    } else {
-        banner.style.display = 'block';
-    }
-
     const list = document.getElementById('users-list');
     list.innerHTML = '<div class="empty-state"><p>A carregar…</p></div>';
 
@@ -452,35 +446,30 @@ async function renderUsersAdmin() {
 }
 
 window.deleteUser = async function(uid) {
-    if (!confirm('Remover este utilizador? Esta ação não pode ser revertida.')) return;
-    const { error } = await db.from('profiles').delete().eq('id', uid);
-    if (error) { alert('Erro: ' + error.message); return; }
+    if (!confirm('Eliminar este utilizador permanentemente?')) return;
+    const { error } = await db.rpc('delete_user_completely', { user_id: uid });
+    if (error) {
+        alert('Erro ao eliminar: ' + error.message);
+        return;
+    }
     renderUsersAdmin();
-    showSaveStatus('Utilizador removido');
+    showSaveStatus('Utilizador eliminado');
 };
 
-document.getElementById('service-key-save').addEventListener('click', () => {
-    const key = document.getElementById('service-key-input').value.trim();
-    if (!key) return;
-    sessionStorage.setItem('sb_admin_key', key);
-    adminClient = window.supabase.createClient(SUPABASE_URL, key);
-    document.getElementById('service-key-banner').style.display = 'none';
-    showSaveStatus('Chave guardada para esta sessão');
-});
 
 document.getElementById('invite-user-btn').addEventListener('click', () => {
-    document.getElementById('invite-modal').classList.add('active');
+    document.getElementById('invite-modal').classList.add('open');
     document.getElementById('invite-error').style.display = 'none';
     document.getElementById('invite-success').style.display = 'none';
     document.getElementById('invite-form').reset();
 });
 
 document.getElementById('invite-modal-close').addEventListener('click', () => {
-    document.getElementById('invite-modal').classList.remove('active');
+    document.getElementById('invite-modal').classList.remove('open');
 });
 
 document.getElementById('invite-cancel').addEventListener('click', () => {
-    document.getElementById('invite-modal').classList.remove('active');
+    document.getElementById('invite-modal').classList.remove('open');
 });
 
 document.getElementById('invite-form').addEventListener('submit', async (e) => {
@@ -493,30 +482,36 @@ document.getElementById('invite-form').addEventListener('submit', async (e) => {
     const password = document.getElementById('invite-password').value;
     const role = document.getElementById('invite-role').value;
 
-    const admin = getAdminClient();
-    if (!admin) {
-        errEl.textContent = 'Cole a chave de serviço Supabase no topo da página Utilizadores antes de criar contas.';
-        errEl.style.display = 'block';
-        return;
-    }
-
     btn.disabled = true;
     btn.textContent = 'A criar…';
     errEl.style.display = 'none';
     successEl.style.display = 'none';
 
-    const { error } = await admin.auth.admin.createUser({
+    const { data: { session: adminSession } } = await db.auth.getSession();
+
+    suppressAuthChange = true;
+    const { error } = await db.auth.signUp({
         email,
         password,
-        email_confirm: true,
-        user_metadata: { name, role }
+        options: { data: { name, role } }
     });
+
+    if (adminSession) {
+        await db.auth.setSession({
+            access_token: adminSession.access_token,
+            refresh_token: adminSession.refresh_token
+        });
+    }
+    suppressAuthChange = false;
 
     btn.disabled = false;
     btn.textContent = 'Criar conta';
 
     if (error) {
-        errEl.textContent = error.message;
+        const msg = error.message.toLowerCase().includes('already registered')
+            ? `O email ${email} já tem conta no sistema. Se foi removido recentemente, apaga-o em Supabase → Authentication → Users e tenta novamente.`
+            : error.message;
+        errEl.textContent = msg;
         errEl.style.display = 'block';
     } else {
         successEl.textContent = `Conta criada para ${email}. Pode entrar de imediato.`;
