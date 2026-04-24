@@ -331,7 +331,7 @@ async function onSignIn(user) {
 
     document.getElementById('user-name-display').textContent = displayName;
     const roleBadge = document.getElementById('user-role-badge');
-    roleBadge.textContent = { read: 'Leitura', write: 'Escrita', admin: 'Admin' }[currentRole] || currentRole;
+    roleBadge.textContent = currentRole === 'admin' ? 'Admin' : 'Leitura';
     roleBadge.className = `role-badge role-badge-${currentRole}`;
     document.getElementById('user-info').style.display = 'flex';
 
@@ -415,8 +415,7 @@ async function renderUsersAdmin() {
             <td>${p.email}</td>
             <td>
                 <select class="role-select" data-uid="${p.id}" ${isSelf ? 'disabled' : ''}>
-                    <option value="read" ${p.role === 'read' ? 'selected' : ''}>Leitura</option>
-                    <option value="write" ${p.role === 'write' ? 'selected' : ''}>Escrita</option>
+                    <option value="read" ${p.role !== 'admin' ? 'selected' : ''}>Leitura</option>
                     <option value="admin" ${p.role === 'admin' ? 'selected' : ''}>Admin</option>
                 </select>
             </td>
@@ -621,7 +620,7 @@ function renderScheduleCalendar() {
     grid.querySelectorAll('.add-slot').forEach(el => {
         el.addEventListener('click', e => {
             e.stopPropagation();
-            if (currentRole === 'read') return;
+            if (currentRole !== 'admin') return;
             openAssignModal(el.dataset.date, el.dataset.shift);
         });
     });
@@ -629,7 +628,7 @@ function renderScheduleCalendar() {
     // Event: click shift row
     grid.querySelectorAll('.cal-shift-row').forEach(el => {
         el.addEventListener('click', () => {
-            if (currentRole === 'read') return;
+            if (currentRole !== 'admin') return;
             const dk = el.dataset.date;
             const shift = el.dataset.shift;
             const assigned = getAssignedForShift(parseDateKey(dk), shift);
@@ -643,7 +642,7 @@ function renderScheduleCalendar() {
     grid.querySelectorAll('.remove-doc').forEach(btn => {
         btn.addEventListener('click', e => {
             e.stopPropagation();
-            if (currentRole === 'read') return;
+            if (currentRole !== 'admin') return;
             const dk = btn.dataset.date;
             const shift = btn.dataset.shift;
             const docId = btn.dataset.doc;
@@ -754,14 +753,14 @@ function renderScheduleList() {
     grid.querySelectorAll('.add-slot').forEach(el => {
         el.addEventListener('click', e => {
             e.stopPropagation();
-            if (currentRole === 'read') return;
+            if (currentRole !== 'admin') return;
             openAssignModal(el.dataset.date, el.dataset.shift);
         });
     });
 
     grid.querySelectorAll('.shift-cell').forEach(el => {
         el.addEventListener('click', () => {
-            if (currentRole === 'read') return;
+            if (currentRole !== 'admin') return;
             const dk = el.dataset.date;
             const shift = el.dataset.shift;
             const assigned = getAssignedForShift(parseDateKey(dk), shift);
@@ -774,7 +773,7 @@ function renderScheduleList() {
     grid.querySelectorAll('.remove-doc').forEach(btn => {
         btn.addEventListener('click', e => {
             e.stopPropagation();
-            if (currentRole === 'read') return;
+            if (currentRole !== 'admin') return;
             const dk = btn.dataset.date;
             const shift = btn.dataset.shift;
             const docId = btn.dataset.doc;

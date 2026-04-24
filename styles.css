@@ -1482,9 +1482,14 @@ h4 {
    AUTH — Role-based visibility
    ================================================================ */
 
-body.role-read .write-only { display: none !important; }
-body.role-read .add-slot   { display: none !important; }
-body.role-read .remove-doc { display: none !important; }
+body.role-read .write-only,
+body.role-write .write-only { display: none !important; }
+
+body.role-read .add-slot,
+body.role-write .add-slot   { display: none !important; }
+
+body.role-read .remove-doc,
+body.role-write .remove-doc { display: none !important; }
 
 body:not(.role-admin) .admin-only { display: none !important; }
 
