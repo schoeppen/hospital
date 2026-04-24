@@ -326,7 +326,7 @@ async function onSignIn(user) {
         document.getElementById('login-error').style.display = 'block';
         return;
     }
-    currentRole = profile.role;
+    currentRole = profile.role || 'read';
     const displayName = profile.name || user.email;
 
     document.getElementById('user-name-display').textContent = displayName;
@@ -401,7 +401,6 @@ async function renderUsersAdmin() {
         return;
     }
 
-    const roleLabels = { read: 'Leitura', write: 'Escrita', admin: 'Admin' };
     let html = `<table class="users-table">
         <thead><tr>
             <th>Nome</th><th>Email</th><th>Papel</th><th>Desde</th><th>Ações</th>
@@ -489,34 +488,37 @@ document.getElementById('invite-form').addEventListener('submit', async (e) => {
     const { data: { session: adminSession } } = await db.auth.getSession();
 
     suppressAuthChange = true;
-    const { error } = await db.auth.signUp({
-        email,
-        password,
-        options: { data: { name, role } }
-    });
-
-    if (adminSession) {
-        await db.auth.setSession({
-            access_token: adminSession.access_token,
-            refresh_token: adminSession.refresh_token
+    try {
+        const { error } = await db.auth.signUp({
+            email,
+            password,
+            options: { data: { name, role } }
         });
-    }
-    suppressAuthChange = false;
 
-    btn.disabled = false;
-    btn.textContent = 'Criar conta';
+        if (adminSession) {
+            await db.auth.setSession({
+                access_token: adminSession.access_token,
+                refresh_token: adminSession.refresh_token
+            });
+        }
 
-    if (error) {
-        const msg = error.message.toLowerCase().includes('already registered')
-            ? `O email ${email} já tem conta no sistema. Se foi removido recentemente, apaga-o em Supabase → Authentication → Users e tenta novamente.`
-            : error.message;
-        errEl.textContent = msg;
-        errEl.style.display = 'block';
-    } else {
-        successEl.textContent = `Conta criada para ${email}. Pode entrar de imediato.`;
-        successEl.style.display = 'block';
-        document.getElementById('invite-form').reset();
-        setTimeout(() => renderUsersAdmin(), 800);
+        btn.disabled = false;
+        btn.textContent = 'Criar conta';
+
+        if (error) {
+            const msg = error.message.toLowerCase().includes('already registered')
+                ? `O email ${email} já tem conta no sistema. Se foi removido recentemente, apaga-o em Supabase → Authentication → Users e tenta novamente.`
+                : error.message;
+            errEl.textContent = msg;
+            errEl.style.display = 'block';
+        } else {
+            successEl.textContent = `Conta criada para ${email}. Pode entrar de imediato.`;
+            successEl.style.display = 'block';
+            document.getElementById('invite-form').reset();
+            setTimeout(() => renderUsersAdmin(), 800);
+        }
+    } finally {
+        suppressAuthChange = false;
     }
 });
 
