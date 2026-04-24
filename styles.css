@@ -1342,19 +1342,82 @@ h4 {
 /* ============================================================
    RESPONSIVE
    ============================================================ */
+/* ============================================================
+   RESPONSIVE — Tablet (≤ 1024px)
+   ============================================================ */
 @media (max-width: 1024px) {
-    .header-content { flex-wrap: wrap; height: auto; padding: 10px 20px; gap: 10px; }
+    .header-content { flex-wrap: wrap; height: auto; padding: 10px 16px; gap: 8px; }
     .logo-area::after { display: none; }
-    main { padding: 24px 20px; }
+    nav { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; flex: none; width: 100%; order: 3; padding-bottom: 2px; }
+    nav::-webkit-scrollbar { display: none; }
+    .data-actions { margin-left: auto; }
+    main { padding: 20px 16px; }
     .modal-lg, .modal { width: 95vw; }
     .modal-sm { width: 95vw; max-width: 440px; }
+    .schedule-toolbar { flex-wrap: wrap; gap: 8px; }
+    .rotations-list { grid-template-columns: 1fr; }
 }
-@media (max-width: 768px) {
-    .doctors-list { grid-template-columns: 1fr; }
+
+/* ============================================================
+   RESPONSIVE — Phone (≤ 640px)
+   ============================================================ */
+@media (max-width: 640px) {
+    /* Header */
+    .header-content { padding: 10px 12px; gap: 6px; }
+    header h1 { font-size: 11px; }
+    .logo-icon svg { width: 28px; height: 28px; }
+    .logo-area { gap: 8px; }
+    .user-name { display: none; }
+    .btn-history { font-size: 0; padding: 0 10px !important; }
+    .btn-history::after { content: '🕐'; font-size: 14px; }
+    .btn-pdf { font-size: 0; padding: 0 10px !important; }
+    .btn-pdf::after { content: '🖨️'; font-size: 14px; }
+
+    /* Main */
+    main { padding: 12px 10px; }
+
+    /* Schedule toolbar */
+    .schedule-toolbar { gap: 6px; padding: 10px 12px; }
+    .schedule-toolbar h2 { font-size: 15px; }
+    #auto-fill-btn, #clear-week-btn { font-size: 12px; padding: 0 10px; height: 32px; }
+    .view-toggle { gap: 2px; }
+    .view-toggle-btn { font-size: 11px; padding: 0 8px; height: 30px; }
+
+    /* Calendar — horizontal scroll on mobile */
+    .schedule-grid { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    .cal-day { min-width: 110px; }
+    #schedule-grid { min-width: 770px; }
+
+    /* Calendar cells */
+    .cal-shift-row { padding: 3px 4px; gap: 3px; }
+    .doctor-tag { font-size: 10px; padding: 2px 6px; }
+    .cal-shift-label { width: 14px; height: 14px; font-size: 8px; }
+
+    /* Doctors / Terceiros */
+    .doctors-list { grid-template-columns: 1fr; gap: 12px; }
+    .doctors-toolbar { flex-wrap: wrap; gap: 10px; padding: 12px 14px; }
+    .doctors-toolbar h2 { font-size: 16px; }
+    .doctor-card-header { flex-wrap: wrap; gap: 6px; }
+
+    /* Forms */
     .form-row { grid-template-columns: 1fr; }
-    .shift-cell { min-height: 70px; padding: 4px; }
-    .data-actions { flex-wrap: wrap; }
-    main { padding: 20px 16px; }
+    .modal-lg, .modal { width: 100vw; max-width: 100vw; border-radius: 20px 20px 0 0; margin-top: auto; max-height: 92vh; }
+    .modal-sm { width: 100vw; max-width: 100vw; border-radius: 20px 20px 0 0; margin-top: auto; }
+    .modal-overlay { align-items: flex-end; }
+
+    /* Hours table — scroll */
+    .hours-table-wrapper, .hours-yearly-wrapper { overflow-x: auto; }
+    .hours-legend { gap: 12px; font-size: 11px; }
+
+    /* Users table */
+    .users-list { padding: 12px 10px 30px; overflow-x: auto; }
+    .users-table { min-width: 500px; }
+
+    /* Service key banner */
+    .service-key-input-row { flex-direction: column; }
+
+    /* Login card */
+    .login-card { padding: 32px 24px; }
 }
 
 /* ============================================================
