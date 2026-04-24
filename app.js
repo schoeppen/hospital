@@ -29,6 +29,18 @@ async function loadData() {
     });
 }
 
+// ---- Auth State ----
+let currentUser = null;
+let currentRole = null;
+let adminClient = null;
+
+function getAdminClient() {
+    const key = sessionStorage.getItem('sb_admin_key');
+    if (!key) return null;
+    if (!adminClient) adminClient = window.supabase.createClient(SUPABASE_URL, key);
+    return adminClient;
+}
+
 // ---- State ----
 let scheduleViewMode = 'calendar'; // 'calendar' or 'list'
 let doctors = [];
@@ -289,6 +301,231 @@ function getMonthlyTotalHours(docId, year, month) {
     return hours;
 }
 
+// ---- Auth ----
+
+async function initAuth() {
+    const { data: { session } } = await db.auth.getSession();
+    if (session) {
+        await onSignIn(session.user);
+    } else {
+        showLoginScreen();
+    }
+
+    db.auth.onAuthStateChange(async (event, session) => {
+        if (event === 'SIGNED_IN' && session) {
+            await onSignIn(session.user);
+        } else if (event === 'SIGNED_OUT') {
+            currentUser = null;
+            currentRole = null;
+            showLoginScreen();
+        }
+    });
+}
+
+async function onSignIn(user) {
+    currentUser = user;
+    const { data: profile } = await db.from('profiles').select('role, name').eq('id', user.id).single();
+    currentRole = profile ? profile.role : 'read';
+    const displayName = (profile && profile.name) || user.email;
+
+    document.getElementById('user-name-display').textContent = displayName;
+    const roleBadge = document.getElementById('user-role-badge');
+    roleBadge.textContent = { read: 'Leitura', write: 'Escrita', admin: 'Admin' }[currentRole] || currentRole;
+    roleBadge.className = `role-badge role-badge-${currentRole}`;
+    document.getElementById('user-info').style.display = 'flex';
+
+    applyRoleUI(currentRole);
+    hideLoginScreen();
+
+    await loadData();
+    renderSchedule();
+    renderDoctors();
+    renderTerceiros();
+    renderRotations();
+    renderHoursSummary();
+}
+
+function applyRoleUI(role) {
+    document.body.classList.remove('role-read', 'role-write', 'role-admin');
+    document.body.classList.add(`role-${role}`);
+}
+
+function showLoginScreen() {
+    document.getElementById('login-screen').classList.add('visible');
+    document.getElementById('login-email').value = '';
+    document.getElementById('login-password').value = '';
+    document.getElementById('login-error').style.display = 'none';
+    document.getElementById('user-info').style.display = 'none';
+}
+
+function hideLoginScreen() {
+    document.getElementById('login-screen').classList.remove('visible');
+}
+
+document.getElementById('login-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = document.getElementById('login-submit');
+    const errEl = document.getElementById('login-error');
+    const email = document.getElementById('login-email').value.trim();
+    const password = document.getElementById('login-password').value;
+
+    btn.disabled = true;
+    btn.textContent = 'A entrar…';
+    errEl.style.display = 'none';
+
+    const { error } = await db.auth.signInWithPassword({ email, password });
+    if (error) {
+        errEl.textContent = error.message === 'Invalid login credentials'
+            ? 'Email ou palavra-passe incorretos.'
+            : error.message;
+        errEl.style.display = 'block';
+        btn.disabled = false;
+        btn.textContent = 'Entrar';
+    }
+});
+
+document.getElementById('logout-btn').addEventListener('click', async () => {
+    await db.auth.signOut();
+});
+
+// ---- Users Admin ----
+
+async function renderUsersAdmin() {
+    const banner = document.getElementById('service-key-banner');
+    if (sessionStorage.getItem('sb_admin_key')) {
+        banner.style.display = 'none';
+    } else {
+        banner.style.display = 'block';
+    }
+
+    const list = document.getElementById('users-list');
+    list.innerHTML = '<div class="empty-state"><p>A carregar…</p></div>';
+
+    const { data: profiles, error } = await db.from('profiles').select('*').order('created_at');
+    if (error) {
+        list.innerHTML = `<div class="empty-state"><p>Erro ao carregar utilizadores: ${error.message}</p></div>`;
+        return;
+    }
+
+    const roleLabels = { read: 'Leitura', write: 'Escrita', admin: 'Admin' };
+    let html = `<table class="users-table">
+        <thead><tr>
+            <th>Nome</th><th>Email</th><th>Papel</th><th>Desde</th><th>Ações</th>
+        </tr></thead><tbody>`;
+
+    profiles.forEach(p => {
+        const isSelf = p.id === currentUser.id;
+        const since = new Date(p.created_at).toLocaleDateString('pt-PT');
+        html += `<tr class="${isSelf ? 'row-self' : ''}">
+            <td><strong>${p.name || '—'}</strong></td>
+            <td>${p.email}</td>
+            <td>
+                <select class="role-select" data-uid="${p.id}" ${isSelf ? 'disabled' : ''}>
+                    <option value="read" ${p.role === 'read' ? 'selected' : ''}>Leitura</option>
+                    <option value="write" ${p.role === 'write' ? 'selected' : ''}>Escrita</option>
+                    <option value="admin" ${p.role === 'admin' ? 'selected' : ''}>Admin</option>
+                </select>
+            </td>
+            <td>${since}</td>
+            <td>${isSelf ? '<span class="badge badge-self">Você</span>' : `<button class="btn btn-sm btn-danger" onclick="deleteUser('${p.id}')">Remover</button>`}</td>
+        </tr>`;
+    });
+
+    html += '</tbody></table>';
+    list.innerHTML = html;
+
+    list.querySelectorAll('.role-select').forEach(sel => {
+        sel.addEventListener('change', async () => {
+            const uid = sel.dataset.uid;
+            const newRole = sel.value;
+            sel.disabled = true;
+            const { error } = await db.from('profiles').update({ role: newRole }).eq('id', uid);
+            if (error) {
+                alert('Erro ao atualizar papel: ' + error.message);
+                sel.value = sel.querySelector('option[selected]')?.value || 'read';
+            } else {
+                showSaveStatus('Papel atualizado');
+            }
+            sel.disabled = false;
+        });
+    });
+}
+
+window.deleteUser = async function(uid) {
+    if (!confirm('Remover este utilizador? Esta ação não pode ser revertida.')) return;
+    const { error } = await db.from('profiles').delete().eq('id', uid);
+    if (error) { alert('Erro: ' + error.message); return; }
+    renderUsersAdmin();
+    showSaveStatus('Utilizador removido');
+};
+
+document.getElementById('service-key-save').addEventListener('click', () => {
+    const key = document.getElementById('service-key-input').value.trim();
+    if (!key) return;
+    sessionStorage.setItem('sb_admin_key', key);
+    adminClient = window.supabase.createClient(SUPABASE_URL, key);
+    document.getElementById('service-key-banner').style.display = 'none';
+    showSaveStatus('Chave guardada para esta sessão');
+});
+
+document.getElementById('invite-user-btn').addEventListener('click', () => {
+    document.getElementById('invite-modal').classList.add('active');
+    document.getElementById('invite-error').style.display = 'none';
+    document.getElementById('invite-success').style.display = 'none';
+    document.getElementById('invite-form').reset();
+});
+
+document.getElementById('invite-modal-close').addEventListener('click', () => {
+    document.getElementById('invite-modal').classList.remove('active');
+});
+
+document.getElementById('invite-cancel').addEventListener('click', () => {
+    document.getElementById('invite-modal').classList.remove('active');
+});
+
+document.getElementById('invite-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = document.getElementById('invite-submit');
+    const errEl = document.getElementById('invite-error');
+    const successEl = document.getElementById('invite-success');
+    const name = document.getElementById('invite-name').value.trim();
+    const email = document.getElementById('invite-email').value.trim();
+    const password = document.getElementById('invite-password').value;
+    const role = document.getElementById('invite-role').value;
+
+    const admin = getAdminClient();
+    if (!admin) {
+        errEl.textContent = 'Cole a chave de serviço Supabase no topo da página Utilizadores antes de criar contas.';
+        errEl.style.display = 'block';
+        return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'A criar…';
+    errEl.style.display = 'none';
+    successEl.style.display = 'none';
+
+    const { error } = await admin.auth.admin.createUser({
+        email,
+        password,
+        email_confirm: true,
+        user_metadata: { name, role }
+    });
+
+    btn.disabled = false;
+    btn.textContent = 'Criar conta';
+
+    if (error) {
+        errEl.textContent = error.message;
+        errEl.style.display = 'block';
+    } else {
+        successEl.textContent = `Conta criada para ${email}. Pode entrar de imediato.`;
+        successEl.style.display = 'block';
+        document.getElementById('invite-form').reset();
+        setTimeout(() => renderUsersAdmin(), 800);
+    }
+});
+
 // ---- Navigation ----
 document.querySelectorAll('.nav-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -296,6 +533,7 @@ document.querySelectorAll('.nav-btn').forEach(btn => {
         btn.classList.add('active');
         document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
         document.getElementById(`${btn.dataset.view}-view`).classList.add('active');
+        if (btn.dataset.view === 'users') renderUsersAdmin();
     });
 });
 
@@ -388,6 +626,7 @@ function renderScheduleCalendar() {
     grid.querySelectorAll('.add-slot').forEach(el => {
         el.addEventListener('click', e => {
             e.stopPropagation();
+            if (currentRole === 'read') return;
             openAssignModal(el.dataset.date, el.dataset.shift);
         });
     });
@@ -395,6 +634,7 @@ function renderScheduleCalendar() {
     // Event: click shift row
     grid.querySelectorAll('.cal-shift-row').forEach(el => {
         el.addEventListener('click', () => {
+            if (currentRole === 'read') return;
             const dk = el.dataset.date;
             const shift = el.dataset.shift;
             const assigned = getAssignedForShift(parseDateKey(dk), shift);
@@ -408,6 +648,7 @@ function renderScheduleCalendar() {
     grid.querySelectorAll('.remove-doc').forEach(btn => {
         btn.addEventListener('click', e => {
             e.stopPropagation();
+            if (currentRole === 'read') return;
             const dk = btn.dataset.date;
             const shift = btn.dataset.shift;
             const docId = btn.dataset.doc;
@@ -518,12 +759,14 @@ function renderScheduleList() {
     grid.querySelectorAll('.add-slot').forEach(el => {
         el.addEventListener('click', e => {
             e.stopPropagation();
+            if (currentRole === 'read') return;
             openAssignModal(el.dataset.date, el.dataset.shift);
         });
     });
 
     grid.querySelectorAll('.shift-cell').forEach(el => {
         el.addEventListener('click', () => {
+            if (currentRole === 'read') return;
             const dk = el.dataset.date;
             const shift = el.dataset.shift;
             const assigned = getAssignedForShift(parseDateKey(dk), shift);
@@ -536,6 +779,7 @@ function renderScheduleList() {
     grid.querySelectorAll('.remove-doc').forEach(btn => {
         btn.addEventListener('click', e => {
             e.stopPropagation();
+            if (currentRole === 'read') return;
             const dk = btn.dataset.date;
             const shift = btn.dataset.shift;
             const docId = btn.dataset.doc;
@@ -913,7 +1157,7 @@ function renderRotations() {
                 <span>${docB ? docB.name : '(eliminado)'}</span>
             </div>
             <div class="rotation-info">Referência: semana ${rot.startWeek} — ${docA ? docA.name.split(' ')[0] : '?'} começa</div>
-            <div class="card-actions">
+            <div class="card-actions write-only">
                 <button class="btn btn-sm" onclick="editRotation('${rot.id}')">Editar</button>
                 <button class="btn btn-sm btn-danger" onclick="deleteRotation('${rot.id}')">Eliminar</button>
             </div>
@@ -1631,7 +1875,7 @@ function renderDoctors() {
             ${fixedHtml}
             ${rulesSummary}
             ${flexSummary}
-            <div class="card-actions">
+            <div class="card-actions write-only">
                 <button class="btn btn-sm" onclick="editDoctor('${doc.id}')">Editar</button>
                 <button class="btn btn-sm btn-danger" onclick="deleteDoctor('${doc.id}')">Eliminar</button>
             </div>
@@ -2268,7 +2512,7 @@ function renderTerceiros() {
                 ${t.email ? `<span>✉ ${t.email}</span>` : ''}
             </div>
             <div class="avail-summary">Disponível em ${availCount} dias — ${MONTH_NAMES[curMonth]} ${curYear}</div>
-            <div class="card-actions">
+            <div class="card-actions write-only">
                 <button class="btn btn-sm" onclick="editTerceiro('${t.id}')">Editar</button>
                 <button class="btn btn-sm btn-danger" onclick="deleteTerceiro('${t.id}')">Eliminar</button>
             </div>
@@ -2708,22 +2952,12 @@ function showSaveStatus(msg) {
 
 document.getElementById('history-btn').addEventListener('click', openHistoryModal);
 document.getElementById('pdf-btn').addEventListener('click', () => window.print());
-document.getElementById('export-btn').addEventListener('click', exportData);
-document.getElementById('import-btn').addEventListener('click', () => {
-    document.getElementById('import-file').click();
-});
 document.getElementById('import-file').addEventListener('change', (e) => {
     if (e.target.files.length > 0) {
         importData(e.target.files[0]);
-        e.target.value = ''; // reset so same file can be re-imported
+        e.target.value = '';
     }
 });
 
 // ---- Init ----
-loadData().then(() => {
-    renderSchedule();
-    renderDoctors();
-    renderTerceiros();
-    renderRotations();
-    renderHoursSummary();
-});
+initAuth();
