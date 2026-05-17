@@ -248,6 +248,18 @@ nav {
 }
 .save-status.saving { color: #fbbf24; }
 .save-status.saved  { color: #34d399; }
+.save-status.failed {
+    color: #fff;
+    background: #dc2626;
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-weight: 600;
+    animation: save-fail-pulse 1.4s ease-in-out infinite;
+}
+@keyframes save-fail-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.6); }
+    50%      { box-shadow: 0 0 0 6px rgba(220, 38, 38, 0); }
+}
 
 /* ── History modal list ── */
 .history-entry {

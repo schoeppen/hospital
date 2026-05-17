@@ -18,15 +18,46 @@ const SUPABASE_URL = 'https://gptovrbtiosdfqawwwcb.supabase.co';
 const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdwdG92cmJ0aW9zZGZxYXd3d2NiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQyMTM5MzksImV4cCI6MjA4OTc4OTkzOX0.0nZmLu7SF2elW33fIAthRM0u3-kV8xS_N7iETY60wz4';
 const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
+const LOCAL_CACHE_KEY = 'chbv_local_cache';
+
+function writeLocalCache(pending) {
+    try {
+        localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify({
+            version: 1, timestamp: Date.now(), pending,
+            doctors, schedules, rotations, terceiros
+        }));
+    } catch (e) { console.warn('localStorage cheia ou indisponível', e); }
+}
+
+function readLocalCache() {
+    try {
+        const raw = localStorage.getItem(LOCAL_CACHE_KEY);
+        return raw ? JSON.parse(raw) : null;
+    } catch { return null; }
+}
+
 async function loadData() {
     const { data, error } = await db.from('app_data').select('*');
-    if (error) { console.error('Erro ao carregar dados:', error); return; }
-    data.forEach(row => {
-        if (row.key === 'chbv_doctors') doctors = row.value;
-        if (row.key === 'chbv_schedules') schedules = row.value;
-        if (row.key === 'chbv_rotations') rotations = row.value;
-        if (row.key === 'chbv_terceiros') terceiros = row.value;
-    });
+    if (error) { console.error('Erro ao carregar dados:', error); }
+    if (data) {
+        data.forEach(row => {
+            if (row.key === 'chbv_doctors') doctors = row.value;
+            if (row.key === 'chbv_schedules') schedules = row.value;
+            if (row.key === 'chbv_rotations') rotations = row.value;
+            if (row.key === 'chbv_terceiros') terceiros = row.value;
+        });
+    }
+    // Restore pending local edits that never made it to the server
+    const cache = readLocalCache();
+    if (cache && cache.pending) {
+        const ageMin = Math.round((Date.now() - cache.timestamp) / 60000);
+        console.warn(`A restaurar alterações locais pendentes (${ageMin} min)`);
+        if (cache.doctors)   doctors   = cache.doctors;
+        if (cache.schedules) schedules = cache.schedules;
+        if (cache.rotations) rotations = cache.rotations;
+        if (cache.terceiros) terceiros = cache.terceiros;
+        setTimeout(() => save(), 500); // push them up
+    }
 }
 
 // ---- Auth State ----
@@ -142,28 +173,88 @@ function closeHistoryModal() {
     document.getElementById('history-modal').classList.remove('open');
 }
 
-function save() {
+let _saveTimer = null;
+let _saveInFlight = false;
+let _retryTimer = null;
+const SAVE_DEBOUNCE_MS = 400;
+const RETRY_BACKOFF_MS = [1000, 3000, 8000];
+
+function setSaveStatus(state, msg) {
     const el = document.getElementById('save-status');
-    if (el) { el.textContent = '⏳ A guardar...'; }
+    if (!el) return;
+    el.classList.remove('saving', 'saved', 'failed');
+    if (state) el.classList.add(state);
+    el.textContent = msg;
+}
+
+function save() {
+    writeLocalCache(true);             // instant local backup
+    setSaveStatus('saving', '⏳ A guardar...');
+    if (_saveTimer)  clearTimeout(_saveTimer);
+    if (_retryTimer) { clearTimeout(_retryTimer); _retryTimer = null; }
+    _saveTimer = setTimeout(performSave, SAVE_DEBOUNCE_MS);
+}
+
+async function performSave() {
+    _saveTimer = null;
+    if (_saveInFlight) {               // overlap → re-queue after current finishes
+        _saveTimer = setTimeout(performSave, SAVE_DEBOUNCE_MS);
+        return;
+    }
+    _saveInFlight = true;
     const entries = [
-        { key: 'chbv_doctors', value: doctors },
+        { key: 'chbv_doctors',   value: doctors },
         { key: 'chbv_schedules', value: schedules },
         { key: 'chbv_rotations', value: rotations },
         { key: 'chbv_terceiros', value: terceiros },
     ];
-    db.from('app_data').upsert(entries).then(({ error }) => {
-        if (error) { console.error('Erro ao guardar:', error); if (el) el.textContent = '✗ Erro'; return; }
-        if (el) {
-            el.textContent = '✓ Guardado';
-            el.classList.add('saved');
-            setTimeout(() => el.classList.remove('saved'), 2000);
+
+    let lastError = null;
+    for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt++) {
+        const { error } = await db.from('app_data').upsert(entries);
+        if (!error) { lastError = null; break; }
+        lastError = error;
+        console.warn(`Save attempt ${attempt + 1} failed:`, error.message || error);
+        if (attempt < RETRY_BACKOFF_MS.length) {
+            await new Promise(r => setTimeout(r, RETRY_BACKOFF_MS[attempt]));
         }
-        if (typeof renderHoursSummary === 'function' && document.getElementById('hours-table')) {
-            try { renderHoursSummary(); } catch(e) {}
-        }
-        saveHistory();
-    });
+    }
+    _saveInFlight = false;
+
+    if (lastError) {
+        setSaveStatus('failed', '⚠ Falha ao guardar — vou tentar novamente');
+        if (_retryTimer) clearTimeout(_retryTimer);
+        _retryTimer = setTimeout(performSave, 15000);
+        return;
+    }
+
+    writeLocalCache(false);            // clean cache, no longer pending
+    if (_retryTimer) { clearTimeout(_retryTimer); _retryTimer = null; }
+    setSaveStatus('saved', '✓ Guardado');
+    setTimeout(() => {
+        const el = document.getElementById('save-status');
+        if (el && el.classList.contains('saved')) el.textContent = '';
+    }, 2500);
+    if (typeof renderHoursSummary === 'function' && document.getElementById('hours-table')) {
+        try { renderHoursSummary(); } catch(e) {}
+    }
+    saveHistory();
 }
+
+window.addEventListener('online', () => {
+    if (_retryTimer) { clearTimeout(_retryTimer); _retryTimer = null; }
+    const cache = readLocalCache();
+    if (cache && cache.pending) performSave();
+});
+
+window.addEventListener('beforeunload', e => {
+    const cache = readLocalCache();
+    if (cache && cache.pending) {
+        e.preventDefault();
+        e.returnValue = 'Existem alterações por guardar. Sair mesmo assim?';
+        return e.returnValue;
+    }
+});
 
 // ---- Utility ----
 function generateId() {
@@ -3025,12 +3116,10 @@ function importData(file) {
 }
 
 function showSaveStatus(msg) {
-    const el = document.getElementById('save-status');
-    el.textContent = msg || '✓ Guardado';
-    el.classList.add('saved');
+    setSaveStatus('saved', msg || '✓ Guardado');
     setTimeout(() => {
-        el.textContent = '✓ Guardado';
-        el.classList.remove('saved');
+        const el = document.getElementById('save-status');
+        if (el && el.classList.contains('saved')) el.textContent = '';
     }, 2000);
 }
 
