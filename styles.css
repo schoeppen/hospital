@@ -614,7 +614,11 @@ main {
 }
 .day-row-label .day-num  { font-size: 14px; font-weight: 700; min-width: 22px; text-align: right; color: var(--gray-700); }
 .day-row-label .day-name { font-size: 11px; font-weight: 500; color: var(--gray-400); }
-.day-row-label.weekend-header { background: #d8e3ef; }
+.day-row-label.weekend-header {
+    background: #eef3f8;
+    box-shadow: inset 3px 0 0 0 var(--brand-500);
+}
+.day-row-label.weekend-header .day-num  { color: var(--brand-700); }
 .day-row-label.weekend-header .day-name { color: var(--brand-600); font-weight: 700; }
 .day-row-label.today-label    { background: var(--brand-500); color: #fff; }
 .day-row-label.today-label .day-name { color: rgba(255,255,255,0.65); }
@@ -635,7 +639,7 @@ main {
 }
 .shift-cell.day-shift   { border-left-color: var(--shift-day); }
 .shift-cell.night-shift { border-left-color: var(--shift-night); }
-.shift-cell.weekend-cell { background: #e2ebf5; }
+/* weekend tint stays only on the day label, not on the shift cells, so status colors remain visible */
 .shift-cell.today-cell   { background: var(--brand-50); }
 .shift-cell:hover        { background: var(--gray-50); }
 .shift-cell.empty        { background: var(--red-light); }
@@ -1632,10 +1636,13 @@ h4 {
         text-transform: uppercase;
         letter-spacing: 0.5px;
     }
-    .plist-weekend .plist-date { background: #d8e3ef !important; }
+    .plist-weekend .plist-date {
+        background: #eef3f8 !important;
+        box-shadow: inset 3px 0 0 0 #2563eb;
+    }
+    .plist-weekend .plist-day-num  { color: #0f2d52 !important; }
     .plist-weekend .plist-day-name { color: #1a4a82 !important; font-weight: 700; }
-    .plist-weekend td.plist-shift-day   { background: #dbe5f0 !important; }
-    .plist-weekend td.plist-shift-night { background: #dde0ee !important; }
+    /* Shift cells keep their own status colors on weekends */
     .plist-today  .plist-date { background: #dbeafe !important; color: #1e3a8a; }
 
     .plist-shift-day  { background: #f0f9ff !important; }
