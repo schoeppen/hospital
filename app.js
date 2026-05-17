@@ -601,7 +601,8 @@ function renderScheduleCalendar() {
                     data-fullname="${doc ? doc.name : '?'}"
                     data-hours-used="${hoursUsed ?? ''}"
                     data-hours-limit="${hoursLimit}"
-                    data-shift-type="${shiftType}">
+                    data-shift-type="${shiftType}"
+                    data-doc-id="${docId}">
                     <span>${firstName}</span>
                     <button class="remove-doc" data-date="${dk}" data-shift="${shift}" data-doc="${docId}">&times;</button>
                 </div>`;
@@ -675,8 +676,13 @@ function renderScheduleCalendar() {
             hoverCard.style.display = 'block';
             hoverCard.style.left = `${rect.left + window.scrollX}px`;
             hoverCard.style.top = `${rect.top + window.scrollY - hoverCard.offsetHeight - 8}px`;
+            scheduleDoctorHighlight(tag.dataset.docId);
         });
-        tag.addEventListener('mouseleave', () => { hoverCard.style.display = 'none'; });
+        tag.addEventListener('mouseleave', () => {
+            hoverCard.style.display = 'none';
+            cancelDoctorHighlight();
+        });
+        attachDoctorTouchHighlight(tag);
     });
 }
 
@@ -737,7 +743,8 @@ function renderScheduleList() {
                     data-fullname="${doc ? doc.name : '?'}"
                     data-hours-used="${hoursUsed ?? ''}"
                     data-hours-limit="${hoursLimit}"
-                    data-shift-type="${shiftType}">
+                    data-shift-type="${shiftType}"
+                    data-doc-id="${docId}">
                     <span>${doc ? doc.name : '?'}</span>
                     <button class="remove-doc" data-date="${dk}" data-shift="${shift}" data-doc="${docId}">&times;</button>
                 </div>`;
@@ -806,10 +813,90 @@ function renderScheduleList() {
             hoverCard.style.display = 'block';
             hoverCard.style.left = `${rect.left + window.scrollX}px`;
             hoverCard.style.top = `${rect.top + window.scrollY - hoverCard.offsetHeight - 8}px`;
+            scheduleDoctorHighlight(tag.dataset.docId);
         });
-        tag.addEventListener('mouseleave', () => { hoverCard.style.display = 'none'; });
+        tag.addEventListener('mouseleave', () => {
+            hoverCard.style.display = 'none';
+            cancelDoctorHighlight();
+        });
+        attachDoctorTouchHighlight(tag);
     });
 }
+
+let _docHighlightTimer = null;
+let _docHighlightId = null;
+const DOC_HIGHLIGHT_DELAY = 2000;
+
+function scheduleDoctorHighlight(docId) {
+    if (!docId || docId === 'undefined') return;
+    if (_docHighlightId === docId) return;
+    cancelDoctorHighlight();
+    _docHighlightTimer = setTimeout(() => {
+        applyDoctorHighlight(docId);
+    }, DOC_HIGHLIGHT_DELAY);
+}
+
+function cancelDoctorHighlight() {
+    if (_docHighlightTimer) { clearTimeout(_docHighlightTimer); _docHighlightTimer = null; }
+    if (_docHighlightId) {
+        document.body.classList.remove('doc-highlight-active');
+        document.querySelectorAll('.doctor-tag.doc-highlight').forEach(el => el.classList.remove('doc-highlight'));
+        _docHighlightId = null;
+    }
+}
+
+function applyDoctorHighlight(docId) {
+    _docHighlightId = docId;
+    document.body.classList.add('doc-highlight-active');
+    document.querySelectorAll(`.doctor-tag[data-doc-id="${docId}"]`).forEach(el => el.classList.add('doc-highlight'));
+}
+
+function attachDoctorTouchHighlight(tag) {
+    let touchTimer = null;
+    let startXY = null;
+    let highlightTriggered = false;
+
+    tag.addEventListener('touchstart', e => {
+        if (e.touches.length !== 1) return;
+        startXY = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+        highlightTriggered = false;
+        touchTimer = setTimeout(() => {
+            applyDoctorHighlight(tag.dataset.docId);
+            highlightTriggered = true;
+            touchTimer = null;
+            if (navigator.vibrate) navigator.vibrate(20);
+        }, DOC_HIGHLIGHT_DELAY);
+    }, { passive: true });
+
+    tag.addEventListener('touchmove', e => {
+        if (!touchTimer || !startXY) return;
+        const dx = e.touches[0].clientX - startXY.x;
+        const dy = e.touches[0].clientY - startXY.y;
+        if ((dx * dx + dy * dy) > 100) { // > 10px movement → cancel
+            clearTimeout(touchTimer);
+            touchTimer = null;
+        }
+    }, { passive: true });
+
+    const cleanup = e => {
+        if (touchTimer) { clearTimeout(touchTimer); touchTimer = null; }
+        if (highlightTriggered) {
+            // suppress the synthesised click so we don't open the assign modal / remove
+            e.preventDefault();
+            e.stopPropagation();
+        }
+        startXY = null;
+    };
+    tag.addEventListener('touchend', cleanup);
+    tag.addEventListener('touchcancel', cleanup);
+}
+
+// Dismiss highlight when tapping/clicking anywhere outside a highlighted tag
+document.addEventListener('click', e => {
+    if (!_docHighlightId) return;
+    if (e.target.closest('.doctor-tag.doc-highlight')) return;
+    cancelDoctorHighlight();
+});
 
 function parseDateKey(dk) {
     const [y, m, d] = dk.split('-').map(Number);

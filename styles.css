@@ -686,6 +686,16 @@ main {
 .doctor-tag:hover .remove-doc { opacity: 0.45; }
 .doctor-tag .remove-doc:hover { opacity: 1; }
 
+/* Same-doctor highlight (triggered after 3s hover) */
+body.doc-highlight-active .doctor-tag { opacity: 0.25; transition: opacity 0.2s, box-shadow 0.2s, transform 0.2s; }
+body.doc-highlight-active .doctor-tag.doc-highlight {
+    opacity: 1;
+    box-shadow: 0 0 0 2px var(--brand-500), 0 4px 12px rgba(37, 99, 235, 0.35);
+    transform: translateY(-1px);
+    z-index: 5;
+    position: relative;
+}
+
 /* Hover card */
 .doc-hover-card {
     position: absolute;
