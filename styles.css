@@ -1502,6 +1502,9 @@ h4 {
         color: #2563eb;
         text-align: right;
         letter-spacing: -0.3px;
+        white-space: nowrap;
+        flex-shrink: 0;
+        padding-right: 4px;
     }
 
     /* Calendar table */
@@ -1586,7 +1589,7 @@ h4 {
         font-weight: 500;
     }
 
-    /* ---- LIST VIEW PDF (A4 portrait) ---- */
+    /* ---- LIST VIEW PDF (A4 portrait, one column per doctor) ---- */
     .plist {
         width: 100%;
         border-collapse: collapse;
@@ -1595,37 +1598,43 @@ h4 {
     .plist thead th {
         background: #0a1929 !important;
         color: white !important;
-        text-align: left;
-        font-size: 9px;
+        text-align: center;
         font-weight: 700;
-        padding: 5px 8px;
+        padding: 4px 4px;
         text-transform: uppercase;
-        letter-spacing: 0.5px;
+        letter-spacing: 0.4px;
+        font-size: 9px;
     }
+    .plist-h-shifts th { border-bottom: 1px solid rgba(255,255,255,0.25); }
+    .plist-h-slots th  { font-size: 8px; padding: 3px 4px; font-weight: 600; opacity: 0.95; }
     .plist thead th small {
-        display: inline-block;
+        display: block;
         font-weight: 500;
         opacity: 0.7;
-        margin-left: 6px;
-        font-size: 8px;
+        margin-top: 1px;
+        font-size: 7.5px;
         text-transform: none;
         letter-spacing: 0;
     }
-    .plist-date-h { width: 14%; }
-    .plist thead th.plist-shift-day   { background: #075985 !important; }
+    .plist-date-h { width: 13%; }
+    .plist thead th.plist-shift-day  { background: #075985 !important; }
     .plist thead th.plist-shift-night { background: #4c1d95 !important; }
 
     .plist tbody td {
         border: 1px solid #e5e7eb;
-        padding: 3px 8px;
+        padding: 3px 5px;
         vertical-align: middle;
-        font-size: 10px;
-        line-height: 1.3;
+        font-size: 9.5px;
+        line-height: 1.25;
+        text-align: center;
+        word-break: break-word;
     }
+
     .plist-date {
         background: #f9fafb !important;
         font-weight: 700;
         white-space: nowrap;
+        text-align: left !important;
     }
     .plist-day-num {
         font-size: 12px;
@@ -1639,20 +1648,28 @@ h4 {
         text-transform: uppercase;
         letter-spacing: 0.5px;
     }
+
     .plist-weekend .plist-date {
         background: #eef3f8 !important;
         box-shadow: inset 3px 0 0 0 #2563eb;
     }
     .plist-weekend .plist-day-num  { color: #0f2d52 !important; }
     .plist-weekend .plist-day-name { color: #1a4a82 !important; font-weight: 700; }
-    /* Shift cells keep their own status colors on weekends */
-    .plist-today  .plist-date { background: #dbeafe !important; color: #1e3a8a; }
+    .plist-today .plist-date { background: #dbeafe !important; color: #1e3a8a; }
 
-    .plist-shift-day  { background: #f0f9ff !important; }
-    .plist-shift-night { background: #f5f3ff !important; }
-    .plist tbody td.pempty   { background: #fee2e2 !important; color: #dc2626; font-style: italic; }
-    .plist tbody td.ppartial { background: #fef3c7 !important; }
-    .plist-dash { color: #dc2626; }
+    /* Shift-level status applied to every slot cell of that shift */
+    .plist tbody td.plist-slot.pcomplete { background: #ffffff !important; }
+    .plist tbody td.plist-slot.ppartial  { background: #fef3c7 !important; }
+    .plist tbody td.plist-slot.pempty    { background: #fee2e2 !important; }
+
+    /* Doctor names — uniform colour and weight */
+    .pname-fixed,
+    .pname-flex,
+    .pname-terceiro { color: #0f2d52; font-weight: 600; font-style: normal; }
+    .pname-empty    { color: #b91c1c; font-style: italic; font-size: 11px; }
+
+    /* Vertical divider between the Diurno and Noturno blocks */
+    .plist .plist-divider { border-left: 2px solid #475569 !important; }
 }
 
 /* ================================================================

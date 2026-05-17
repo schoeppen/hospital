@@ -3134,6 +3134,8 @@ function showSaveStatus(msg) {
 document.getElementById('history-btn').addEventListener('click', openHistoryModal);
 document.getElementById('pdf-btn').addEventListener('click', generatePDF);
 
+let _origDocTitle = null;
+
 function generatePDF() {
     const isList = scheduleViewMode === 'list';
 
@@ -3148,12 +3150,20 @@ function generatePDF() {
     document.body.classList.toggle('print-list', isList);
     document.body.classList.toggle('print-calendar', !isList);
 
+    // Suppress the browser's auto-injected page title in the print header
+    _origDocTitle = document.title;
+    document.title = ' ';
+
     document.getElementById('print-view').innerHTML = isList ? buildListPdfHtml() : buildCalendarPdfHtml();
     window.print();
 }
 
 window.addEventListener('afterprint', () => {
     document.body.classList.remove('print-list', 'print-calendar');
+    if (_origDocTitle !== null) {
+        document.title = _origDocTitle;
+        _origDocTitle = null;
+    }
 });
 
 function buildPdfHeader(month, year) {
@@ -3173,13 +3183,8 @@ function buildPdfHeader(month, year) {
     </div>`;
 }
 
-function buildPdfFooter(totalAssigned, totalSlots) {
-    const filledPct = totalSlots > 0 ? Math.round((totalAssigned / totalSlots) * 100) : 0;
-    const now = new Date().toLocaleDateString('pt-PT');
-    return `<div class="print-footer">
-        <span>Gerado em ${now}</span>
-        <span>${doctors.length} médicos · ${totalAssigned}/${totalSlots} turnos preenchidos (${filledPct}%)</span>
-    </div>`;
+function buildPdfFooter() {
+    return '';
 }
 
 function buildCalendarPdfHtml() {
@@ -3254,6 +3259,7 @@ function buildListPdfHtml() {
     const dates = getMonthDates();
     const todayStr = new Date().toDateString();
 
+    const N = DOCTORS_PER_SHIFT;
     let totalAssigned = 0;
     let totalSlots = 0;
 
@@ -3261,37 +3267,56 @@ function buildListPdfHtml() {
         const dow = (d.getDay() + 6) % 7;
         const isWeekend = dow >= 5;
         const isToday = d.toDateString() === todayStr;
-        const cellHtml = ['day','night'].map(shift => {
+
+        const slotCells = [];
+        ['day','night'].forEach(shift => {
             const assigned = getAssignedForShift(d, shift);
-            totalSlots++;
             if (assigned.length > 0) totalAssigned++;
-            const names = assigned.map(id => {
-                const doc = doctors.find(x => x.id === id) || terceiros.find(x => x.id === id);
-                return doc ? doc.name.split(' ').slice(0,2).join(' ') : '?';
-            });
             const isEmpty = assigned.length === 0;
-            const isPartial = assigned.length > 0 && assigned.length < DOCTORS_PER_SHIFT;
-            const statusCls = isEmpty ? 'pempty' : isPartial ? 'ppartial' : '';
-            return `<td class="plist-shift plist-shift-${shift} ${statusCls}">
-                ${isEmpty ? '<span class="plist-dash">—</span>' : names.join(' · ')}
-            </td>`;
-        }).join('');
+            const isPartial = assigned.length > 0 && assigned.length < N;
+            // shift-level status applied to every slot cell of that shift
+            const statusCls = isEmpty ? 'pempty' : isPartial ? 'ppartial' : 'pcomplete';
+
+            for (let i = 0; i < N; i++) {
+                totalSlots++;
+                const docId = assigned[i];
+                const dividerCls = (shift === 'night' && i === 0) ? ' plist-divider' : '';
+                if (docId) {
+                    const doc = doctors.find(x => x.id === docId) || terceiros.find(x => x.id === docId);
+                    const isTerceiro = !doctors.find(x => x.id === docId) && !!terceiros.find(x => x.id === docId);
+                    const isFixed = doc && isFixedForShiftOnDate(doc, d, shift);
+                    const nameCls = isFixed ? 'pname-fixed' : isTerceiro ? 'pname-terceiro' : 'pname-flex';
+                    const name = doc ? doc.name.split(' ').slice(0,2).join(' ') : '?';
+                    slotCells.push(`<td class="plist-slot plist-${shift} ${statusCls}${dividerCls}"><span class="${nameCls}">${name}</span></td>`);
+                } else {
+                    slotCells.push(`<td class="plist-slot plist-${shift} ${statusCls}${dividerCls}"><span class="pname-empty">—</span></td>`);
+                }
+            }
+        });
 
         return `<tr class="${isWeekend ? 'plist-weekend' : ''} ${isToday ? 'plist-today' : ''}">
             <td class="plist-date">
                 <span class="plist-day-num">${d.getDate()}</span>
                 <span class="plist-day-name">${DAYS[dow]}</span>
-            </td>${cellHtml}
+            </td>${slotCells.join('')}
         </tr>`;
+    }).join('');
+
+    const slotHeaders = (shift) => Array.from({length: N}, (_, i) => {
+        const dividerCls = (shift === 'night' && i === 0) ? ' plist-divider' : '';
+        return `<th class="plist-slot-h plist-shift-${shift}${dividerCls}">Médico ${i + 1}</th>`;
     }).join('');
 
     return `${buildPdfHeader(month, year)}
         <table class="plist">
-            <thead><tr>
-                <th class="plist-date-h">Dia</th>
-                <th class="plist-shift-h plist-shift-day">Diurno <small>08:30–20:30</small></th>
-                <th class="plist-shift-h plist-shift-night">Noturno <small>20:30–08:30</small></th>
-            </tr></thead>
+            <thead>
+                <tr class="plist-h-shifts">
+                    <th class="plist-date-h" rowspan="2">Dia</th>
+                    <th class="plist-shift-h plist-shift-day" colspan="${N}">Diurno <small>08:30–20:30</small></th>
+                    <th class="plist-shift-h plist-shift-night plist-divider" colspan="${N}">Noturno <small>20:30–08:30</small></th>
+                </tr>
+                <tr class="plist-h-slots">${slotHeaders('day')}${slotHeaders('night')}</tr>
+            </thead>
             <tbody>${rowsHtml}</tbody>
         </table>
         ${buildPdfFooter(totalAssigned, totalSlots)}`;
