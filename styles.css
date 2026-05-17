@@ -687,6 +687,9 @@ main {
     background: var(--brand-50);
     color: var(--brand-600);
     transition: box-shadow 0.1s;
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
 }
 .doctor-tag:hover        { box-shadow: var(--shadow-sm); }
 .doctor-tag.fixed-tag    { background: var(--brand-50);          border-color: var(--brand-300);       color: #1e40af; }

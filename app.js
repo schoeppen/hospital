@@ -947,6 +947,9 @@ function attachDoctorTouchHighlight(tag) {
     let startXY = null;
     let highlightTriggered = false;
 
+    // Prevent the OS long-press context menu (text selection, copy, share)
+    tag.addEventListener('contextmenu', e => e.preventDefault());
+
     tag.addEventListener('touchstart', e => {
         if (e.touches.length !== 1) return;
         startXY = { x: e.touches[0].clientX, y: e.touches[0].clientY };
@@ -1629,14 +1632,19 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
                     .filter(doc => !needsRestAfterNight(doc.id, date, shift))
                     .filter(doc => shift !== 'night' || !hasNextDayConflict(doc.id, date))
                     .filter(doc => !workedOtherWeekendDay(doc.id, date))
-                    .filter(doc => isFixedForShiftOnDate(doc, date, shift) || isFlexAvailableOnDate(doc, date, shift))
-                    .sort((a, b) => (recoveryDebt[b.id] || 0) - (recoveryDebt[a.id] || 0));
+                    .map(doc => ({
+                        doc,
+                        debt: recoveryDebt[doc.id] || 0,
+                        // 0 = fixo ou "pode" explícito, 1 = dia neutro (último recurso)
+                        availPriority: (isFixedForShiftOnDate(doc, date, shift) || isFlexAvailableOnDate(doc, date, shift)) ? 0 : 1,
+                    }))
+                    .sort((a, b) => a.availPriority - b.availPriority || b.debt - a.debt);
 
-                for (const doc of candidates) {
+                for (const c of candidates) {
                     if (arr.length >= DOCTORS_PER_SHIFT) break;
-                    arr.push(doc.id);
-                    recoveryDebt[doc.id]--;
-                    if (recoveryDebt[doc.id] <= 0) delete recoveryDebt[doc.id];
+                    arr.push(c.doc.id);
+                    recoveryDebt[c.doc.id]--;
+                    if (recoveryDebt[c.doc.id] <= 0) delete recoveryDebt[c.doc.id];
                 }
             });
         });
