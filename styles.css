@@ -430,6 +430,10 @@ main {
     letter-spacing: 0.9px;
     text-transform: uppercase;
 }
+.cal-dow-header.weekend {
+    background: var(--brand-600);
+    color: rgba(255,255,255,0.95);
+}
 
 .cal-empty { background: var(--gray-50); }
 
@@ -447,7 +451,7 @@ main {
 .cal-day.has-empty    { border-top-color: var(--red); }
 .cal-day.has-partial  { border-top-color: var(--amber); }
 .cal-day.all-complete { border-top-color: var(--green); }
-.cal-day.cal-weekend  { background: #fafbfc; }
+.cal-day.cal-weekend  { background: #e2ebf5; }
 .cal-day.cal-today    { background: #f0f7ff; }
 
 /* Day number badge */
@@ -598,7 +602,8 @@ main {
 }
 .day-row-label .day-num  { font-size: 14px; font-weight: 700; min-width: 22px; text-align: right; color: var(--gray-700); }
 .day-row-label .day-name { font-size: 11px; font-weight: 500; color: var(--gray-400); }
-.day-row-label.weekend-header { background: var(--gray-50); }
+.day-row-label.weekend-header { background: #d8e3ef; }
+.day-row-label.weekend-header .day-name { color: var(--brand-600); font-weight: 700; }
 .day-row-label.today-label    { background: var(--brand-500); color: #fff; }
 .day-row-label.today-label .day-name { color: rgba(255,255,255,0.65); }
 .day-row-label.today-label .day-num  { color: #fff; }
@@ -618,7 +623,7 @@ main {
 }
 .shift-cell.day-shift   { border-left-color: var(--shift-day); }
 .shift-cell.night-shift { border-left-color: var(--shift-night); }
-.shift-cell.weekend-cell { background: var(--gray-50); }
+.shift-cell.weekend-cell { background: #e2ebf5; }
 .shift-cell.today-cell   { background: var(--brand-50); }
 .shift-cell:hover        { background: var(--gray-50); }
 .shift-cell.empty        { background: var(--red-light); }
@@ -1492,7 +1497,8 @@ h4 {
         padding: 4px 3px 3px;
         width: calc(100% / 7);
     }
-    .pcal-weekend { background: #f9fafb !important; }
+    .pcal-weekend { background: #e2ebf5 !important; }
+    .pcal thead th.pcal-weekend-h { background: #1a4a82 !important; }
     .pcal-today { background: #eff6ff !important; outline: 2px solid #2563eb; }
     .pcal-empty { border: 1px solid #f3f4f6; background: #fafafa !important; }
 
@@ -1604,7 +1610,10 @@ h4 {
         text-transform: uppercase;
         letter-spacing: 0.5px;
     }
-    .plist-weekend .plist-date { background: #eef2f7 !important; }
+    .plist-weekend .plist-date { background: #d8e3ef !important; }
+    .plist-weekend .plist-day-name { color: #1a4a82 !important; font-weight: 700; }
+    .plist-weekend td.plist-shift-day   { background: #dbe5f0 !important; }
+    .plist-weekend td.plist-shift-night { background: #dde0ee !important; }
     .plist-today  .plist-date { background: #dbeafe !important; color: #1e3a8a; }
 
     .plist-shift-day  { background: #f0f9ff !important; }

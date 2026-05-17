@@ -552,8 +552,8 @@ function renderScheduleCalendar() {
     const todayStr = new Date().toDateString();
 
     // Day-of-week headers
-    let html = DAYS.map(d =>
-        `<div class="grid-header cal-dow-header">${d}</div>`
+    let html = DAYS.map((d, i) =>
+        `<div class="grid-header cal-dow-header${i >= 5 ? ' weekend' : ''}">${d}</div>`
     ).join('');
 
     // Padding before first day
@@ -3015,7 +3015,10 @@ function buildCalendarPdfHtml() {
         weeks.push(week);
     }
 
-    const dayHeaders = ['Seg','Ter','Qua','Qui','Sex','Sáb','Dom'];
+    const dayHeaders = [
+        { label: 'Seg' }, { label: 'Ter' }, { label: 'Qua' }, { label: 'Qui' },
+        { label: 'Sex' }, { label: 'Sáb', weekend: true }, { label: 'Dom', weekend: true }
+    ];
 
     let totalAssigned = 0;
     let totalSlots = 0;
@@ -3055,7 +3058,7 @@ function buildCalendarPdfHtml() {
 
     return `${buildPdfHeader(month, year)}
         <table class="pcal">
-            <thead><tr>${dayHeaders.map(h => `<th>${h}</th>`).join('')}</tr></thead>
+            <thead><tr>${dayHeaders.map(h => `<th class="${h.weekend ? 'pcal-weekend-h' : ''}">${h.label}</th>`).join('')}</tr></thead>
             <tbody>${weeksHtml}</tbody>
         </table>
         ${buildPdfFooter(totalAssigned, totalSlots)}`;
