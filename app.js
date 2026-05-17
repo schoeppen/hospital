@@ -2951,12 +2951,59 @@ document.getElementById('history-btn').addEventListener('click', openHistoryModa
 document.getElementById('pdf-btn').addEventListener('click', generatePDF);
 
 function generatePDF() {
+    const isList = scheduleViewMode === 'list';
+
+    let pageStyle = document.getElementById('print-page-style');
+    if (!pageStyle) {
+        pageStyle = document.createElement('style');
+        pageStyle.id = 'print-page-style';
+        document.head.appendChild(pageStyle);
+    }
+    pageStyle.textContent = `@page { size: A4 ${isList ? 'portrait' : 'landscape'}; margin: ${isList ? '0.9cm 1cm' : '1.2cm 1cm'}; }`;
+
+    document.body.classList.toggle('print-list', isList);
+    document.body.classList.toggle('print-calendar', !isList);
+
+    document.getElementById('print-view').innerHTML = isList ? buildListPdfHtml() : buildCalendarPdfHtml();
+    window.print();
+}
+
+window.addEventListener('afterprint', () => {
+    document.body.classList.remove('print-list', 'print-calendar');
+});
+
+function buildPdfHeader(month, year) {
+    return `<div class="print-header">
+        <div class="print-logo-wrap">
+            <svg width="32" height="32" viewBox="0 0 36 36" fill="none">
+                <rect width="36" height="36" rx="8" fill="#2563eb"/>
+                <rect x="15" y="8" width="6" height="20" rx="3" fill="white"/>
+                <rect x="8" y="15" width="20" height="6" rx="3" fill="white"/>
+            </svg>
+        </div>
+        <div class="print-title-block">
+            <div class="print-title">Escala de Urgência</div>
+            <div class="print-subtitle">Centro Hospitalar do Baixo Vouga — Hospital de Aveiro</div>
+        </div>
+        <div class="print-month-badge">${MONTH_NAMES[month]} ${year}</div>
+    </div>`;
+}
+
+function buildPdfFooter(totalAssigned, totalSlots) {
+    const filledPct = totalSlots > 0 ? Math.round((totalAssigned / totalSlots) * 100) : 0;
+    const now = new Date().toLocaleDateString('pt-PT');
+    return `<div class="print-footer">
+        <span>Gerado em ${now}</span>
+        <span>${doctors.length} médicos · ${totalAssigned}/${totalSlots} turnos preenchidos (${filledPct}%)</span>
+    </div>`;
+}
+
+function buildCalendarPdfHtml() {
     const year = currentSchedYear;
     const month = currentSchedMonth;
     const dates = getMonthDates();
 
-    // Build calendar weeks
-    const firstDow = (dates[0].getDay() + 6) % 7; // 0=Mon
+    const firstDow = (dates[0].getDay() + 6) % 7;
     const weeks = [];
     let week = new Array(firstDow).fill(null);
     dates.forEach(d => {
@@ -2976,7 +3023,6 @@ function generatePDF() {
     const weeksHtml = weeks.map(w => {
         const cells = w.map(d => {
             if (!d) return `<td class="pcal-empty"></td>`;
-            const dk = dateKey(d);
             const dow = (d.getDay() + 6) % 7;
             const isWeekend = dow >= 5;
             const isToday = d.toDateString() === new Date().toDateString();
@@ -3007,34 +3053,61 @@ function generatePDF() {
         return `<tr>${cells}</tr>`;
     }).join('');
 
-    const filledPct = totalSlots > 0 ? Math.round((totalAssigned / totalSlots) * 100) : 0;
-    const now = new Date().toLocaleDateString('pt-PT');
+    return `${buildPdfHeader(month, year)}
+        <table class="pcal">
+            <thead><tr>${dayHeaders.map(h => `<th>${h}</th>`).join('')}</tr></thead>
+            <tbody>${weeksHtml}</tbody>
+        </table>
+        ${buildPdfFooter(totalAssigned, totalSlots)}`;
+}
 
-    const html = `<div class="print-header">
-        <div class="print-logo-wrap">
-            <svg width="32" height="32" viewBox="0 0 36 36" fill="none">
-                <rect width="36" height="36" rx="8" fill="#2563eb"/>
-                <rect x="15" y="8" width="6" height="20" rx="3" fill="white"/>
-                <rect x="8" y="15" width="20" height="6" rx="3" fill="white"/>
-            </svg>
-        </div>
-        <div class="print-title-block">
-            <div class="print-title">Escala de Urgência</div>
-            <div class="print-subtitle">Centro Hospitalar do Baixo Vouga — Hospital de Aveiro</div>
-        </div>
-        <div class="print-month-badge">${MONTH_NAMES[month]} ${year}</div>
-    </div>
-    <table class="pcal">
-        <thead><tr>${dayHeaders.map(h => `<th>${h}</th>`).join('')}</tr></thead>
-        <tbody>${weeksHtml}</tbody>
-    </table>
-    <div class="print-footer">
-        <span>Gerado em ${now}</span>
-        <span>${doctors.length} médicos · ${totalAssigned}/${totalSlots} turnos preenchidos (${filledPct}%)</span>
-    </div>`;
+function buildListPdfHtml() {
+    const year = currentSchedYear;
+    const month = currentSchedMonth;
+    const dates = getMonthDates();
+    const todayStr = new Date().toDateString();
 
-    document.getElementById('print-view').innerHTML = html;
-    window.print();
+    let totalAssigned = 0;
+    let totalSlots = 0;
+
+    const rowsHtml = dates.map(d => {
+        const dow = (d.getDay() + 6) % 7;
+        const isWeekend = dow >= 5;
+        const isToday = d.toDateString() === todayStr;
+        const cellHtml = ['day','night'].map(shift => {
+            const assigned = getAssignedForShift(d, shift);
+            totalSlots++;
+            if (assigned.length > 0) totalAssigned++;
+            const names = assigned.map(id => {
+                const doc = doctors.find(x => x.id === id) || terceiros.find(x => x.id === id);
+                return doc ? doc.name.split(' ').slice(0,2).join(' ') : '?';
+            });
+            const isEmpty = assigned.length === 0;
+            const isPartial = assigned.length > 0 && assigned.length < DOCTORS_PER_SHIFT;
+            const statusCls = isEmpty ? 'pempty' : isPartial ? 'ppartial' : '';
+            return `<td class="plist-shift plist-shift-${shift} ${statusCls}">
+                ${isEmpty ? '<span class="plist-dash">—</span>' : names.join(' · ')}
+            </td>`;
+        }).join('');
+
+        return `<tr class="${isWeekend ? 'plist-weekend' : ''} ${isToday ? 'plist-today' : ''}">
+            <td class="plist-date">
+                <span class="plist-day-num">${d.getDate()}</span>
+                <span class="plist-day-name">${DAYS[dow]}</span>
+            </td>${cellHtml}
+        </tr>`;
+    }).join('');
+
+    return `${buildPdfHeader(month, year)}
+        <table class="plist">
+            <thead><tr>
+                <th class="plist-date-h">Dia</th>
+                <th class="plist-shift-h plist-shift-day">Diurno <small>08:30–20:30</small></th>
+                <th class="plist-shift-h plist-shift-night">Noturno <small>20:30–08:30</small></th>
+            </tr></thead>
+            <tbody>${rowsHtml}</tbody>
+        </table>
+        ${buildPdfFooter(totalAssigned, totalSlots)}`;
 }
 document.getElementById('import-file').addEventListener('change', (e) => {
     if (e.target.files.length > 0) {
