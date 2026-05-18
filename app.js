@@ -1753,6 +1753,49 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
     });
 
     // =========================================
+    // PASS 3a-weekend: prefer 24h (D+N same day) on Saturdays and Sundays
+    // even for doctors without explicit flex availability (neutral).
+    // Médicos preferem fazer 24h ao fim-de-semana em vez de 12+12.
+    // =========================================
+    dates.filter(d => {
+        const dow = (d.getDay() + 6) % 7;
+        return dow === 5 || dow === 6; // Sat or Sun
+    }).forEach(date => {
+        const { arr: dayArr } = getSk(date, 'day');
+        const { arr: nightArr } = getSk(date, 'night');
+
+        while (dayArr.length < DOCTORS_PER_SHIFT && nightArr.length < DOCTORS_PER_SHIFT) {
+            const candidates = doctors
+                .filter(doc => doc.can24h === true)
+                .filter(doc => !dayArr.includes(doc.id) && !nightArr.includes(doc.id))
+                .filter(doc => !isBlockedOnDate(doc, date, 'day') && !isBlockedOnDate(doc, date, 'night'))
+                .filter(doc => !isMonthlyUnavailable(doc, date, 'day') && !isMonthlyUnavailable(doc, date, 'night'))
+                .filter(doc => !needsRestAfterNight(doc.id, date, 'day'))
+                .filter(doc => !hasNextDayConflict(doc.id, date))
+                .filter(doc => !workedOtherWeekendDay(doc.id, date))
+                .filter(doc => {
+                    const limit = doc.monthlyHoursLimit || 0;
+                    if (limit <= 0) return false;
+                    const extra = getMonthlyExtraHoursForAutoFill(doc, date);
+                    return (extra + 24) <= limit; // needs 24h headroom
+                })
+                .map(doc => ({
+                    doc,
+                    extraHours: getMonthlyExtraHoursForAutoFill(doc, date),
+                    availPriority:
+                        (isFlexAvailableOnDate(doc, date, 'day') && isFlexAvailableOnDate(doc, date, 'night'))
+                            ? 0 : 1,
+                }))
+                .sort((a, b) => a.availPriority - b.availPriority || a.extraHours - b.extraHours);
+
+            if (candidates.length === 0) break;
+            const chosen = candidates[0].doc;
+            dayArr.push(chosen.id);
+            nightArr.push(chosen.id);
+        }
+    });
+
+    // =========================================
     // PASS 3: Fill remaining slots with flex/extra hours
     // Rules:
     //   - After a night shift, doctor rests the ENTIRE next day (next 2 shifts)
@@ -1905,6 +1948,7 @@ document.getElementById('export-rules-btn').addEventListener('click', () => {
     L('4. Reposição           — indisponibilidade (não-férias) em dia fixo gera débito a repor no mês.');
     L('5. Tarefeiros          — só dias com disponibilidade marcada; nunca sáb+dom na mesma semana.');
     L('6. Turnos 24h          — só médicos com flag "Pode 24h"; só se ambos os slots (D+N) estiverem vazios.');
+    L('   Fim-de-semana       — preferência reforçada por 24h ao Sáb/Dom (médicos preferem 24h a 12+12).');
     L('7. Flex (extra)        — preenche restantes: 1º um por slot vazio, 2º completa o 2º, 3º redistribui.');
 
     H('REGRAS SEMPRE APLICADAS');
