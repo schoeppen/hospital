@@ -96,9 +96,27 @@ let modalTercAvailMonth = new Date().getMonth();
 let modalTercAvailYear = new Date().getFullYear();
 
 // Modal state for monthly day rules
-let modalRulesMonth = new Date().getMonth();
-let modalRulesYear = new Date().getFullYear();
-let modalRulesData = {}; // { "2026-03": [ {dayOfWeek, shiftType, count}, ... ] }
+let modalRulesData = []; // [ {dayOfWeek, shiftType, count}, ... ] — applies to every month
+
+// Returns a doctor's day-of-week rules as a flat array.
+// Migrates legacy month-keyed shape { "YYYY-MM": [rules] } by merging unique
+// (dayOfWeek, shiftType) entries and taking the max count, so no rule is lost.
+function getDoctorRules(doc) {
+    const r = doc && doc.monthlyDayRules;
+    if (!r) return [];
+    if (Array.isArray(r)) return r;
+    const merged = {};
+    Object.values(r).forEach(arr => {
+        if (!Array.isArray(arr)) return;
+        arr.forEach(rule => {
+            const k = `${rule.dayOfWeek}_${rule.shiftType}`;
+            if (!merged[k] || rule.count > merged[k].count) {
+                merged[k] = { dayOfWeek: rule.dayOfWeek, shiftType: rule.shiftType, count: rule.count };
+            }
+        });
+    });
+    return Object.values(merged);
+}
 
 // ---- History ----
 let lastHistorySaveTime = 0;
@@ -1004,8 +1022,7 @@ function parseDateKey(dk) {
 function isRuleBasedShift(doc, date, shift) {
     const year = date.getFullYear();
     const month = date.getMonth();
-    const mk = monthKey(year, month);
-    const rules = (doc.monthlyDayRules && doc.monthlyDayRules[mk]) || [];
+    const rules = getDoctorRules(doc);
     const dow = (date.getDay() + 6) % 7;
 
     for (const rule of rules) {
@@ -1035,8 +1052,7 @@ function isRuleBasedShift(doc, date, shift) {
 }
 
 function isRuleBasedForShiftOnDate(doc, date, shift) {
-    const mk = monthKey(date.getFullYear(), date.getMonth());
-    const rules = (doc.monthlyDayRules && doc.monthlyDayRules[mk]) || [];
+    const rules = getDoctorRules(doc);
     const dow = (date.getDay() + 6) % 7;
     return rules.some(r => r.dayOfWeek === dow && (r.shiftType === shift || r.shiftType === '24h'));
 }
@@ -1204,9 +1220,8 @@ function openAssignModal(dk, shift) {
         }
 
         // Rule badges
-        const mk = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}`;
         const dow = (date.getDay() + 6) % 7;
-        const docRules = (doc.monthlyDayRules && doc.monthlyDayRules[mk]) || [];
+        const docRules = getDoctorRules(doc);
         const applicableRules = docRules.filter(r => r.dayOfWeek === dow);
         const modalHas24hRule = applicableRules.some(r => r.shiftType === '24h');
         applicableRules.forEach(rule => {
@@ -1548,12 +1563,10 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
     // PASS 2.5: Monthly day-of-week rules
     // =========================================
     doctors.forEach(doc => {
-        const rules = doc.monthlyDayRules || {};
+        const rules = getDoctorRules(doc);
         dates.forEach(date => {
-            const mk = monthKey(date.getFullYear(), date.getMonth());
-            const monthRules = rules[mk] || [];
             const dow = (date.getDay() + 6) % 7;
-            const applicable = monthRules
+            const applicable = rules
                 .filter(r => r.dayOfWeek === dow)
                 .sort((a, b) => (a.shiftType === '24h' ? 0 : 1) - (b.shiftType === '24h' ? 0 : 1));
 
@@ -2029,17 +2042,15 @@ function renderDoctors() {
         }
         flexSummary = `<div class="avail-summary">Flex ${MONTH_NAMES[curMonth]}: ${availCount} dias disponíveis</div>`;
 
-        // Monthly day rules summary
+        // Day-of-week rules summary (apply to all months)
         let rulesSummary = '';
-        const docRules = doc.monthlyDayRules || {};
-        const curMk = monthKey(curYear, curMonth);
-        const curRules = docRules[curMk] || [];
+        const curRules = getDoctorRules(doc);
         if (curRules.length > 0) {
             const parts = curRules.map(r => {
                 const shiftLabel = r.shiftType === '24h' ? '24h' : r.shiftType === 'day' ? 'D' : 'N';
                 return `${r.count}× ${DAYS[r.dayOfWeek]} ${shiftLabel}`;
             });
-            rulesSummary = `<div class="rule-summary">Regras ${MONTH_NAMES[curMonth]}: ${parts.join(' + ')}</div>`;
+            rulesSummary = `<div class="rule-summary">Regras: ${parts.join(' + ')}</div>`;
         }
 
         html += `<div class="doctor-card">
@@ -2384,26 +2395,17 @@ document.getElementById('fixed-next-month').addEventListener('click', () => {
     renderFixedMonthlyCalendar();
 });
 
-// ---- Monthly Day Rules ----
-function rulesMonthKey() {
-    return monthKey(modalRulesYear, modalRulesMonth);
-}
-
+// ---- Day-of-Week Rules (apply to all months) ----
 function renderRulesSection() {
-    const mk = rulesMonthKey();
-    document.getElementById('rules-month-label').textContent =
-        `${MONTH_NAMES[modalRulesMonth]} ${modalRulesYear}`;
-
-    const rules = modalRulesData[mk] || [];
     const container = document.getElementById('rules-list');
 
-    if (rules.length === 0) {
-        container.innerHTML = '<div class="rules-list-empty">Nenhuma regra para este mês. Clique "+ Regra" para adicionar.</div>';
+    if (modalRulesData.length === 0) {
+        container.innerHTML = '<div class="rules-list-empty">Nenhuma regra. Clique "+ Regra" para adicionar.</div>';
         return;
     }
 
     let html = '';
-    rules.forEach((rule, idx) => {
+    modalRulesData.forEach((rule, idx) => {
         html += `<div class="rule-row" data-idx="${idx}">
             <select class="rule-dow" data-idx="${idx}">
                 ${DAYS_FULL.map((d, i) => `<option value="${i}" ${i === rule.dayOfWeek ? 'selected' : ''}>${d}</option>`).join('')}
@@ -2420,50 +2422,31 @@ function renderRulesSection() {
     });
     container.innerHTML = html;
 
-    // Event listeners
     container.querySelectorAll('.rule-dow').forEach(sel => {
         sel.addEventListener('change', () => {
-            const mk = rulesMonthKey();
-            modalRulesData[mk][parseInt(sel.dataset.idx)].dayOfWeek = parseInt(sel.value);
+            modalRulesData[parseInt(sel.dataset.idx)].dayOfWeek = parseInt(sel.value);
         });
     });
     container.querySelectorAll('.rule-count').forEach(inp => {
         inp.addEventListener('change', () => {
-            const mk = rulesMonthKey();
-            modalRulesData[mk][parseInt(inp.dataset.idx)].count = parseInt(inp.value) || 1;
+            modalRulesData[parseInt(inp.dataset.idx)].count = parseInt(inp.value) || 1;
         });
     });
     container.querySelectorAll('.rule-shift').forEach(sel => {
         sel.addEventListener('change', () => {
-            const mk = rulesMonthKey();
-            modalRulesData[mk][parseInt(sel.dataset.idx)].shiftType = sel.value;
+            modalRulesData[parseInt(sel.dataset.idx)].shiftType = sel.value;
         });
     });
     container.querySelectorAll('.rule-delete').forEach(btn => {
         btn.addEventListener('click', () => {
-            const mk = rulesMonthKey();
-            modalRulesData[mk].splice(parseInt(btn.dataset.idx), 1);
-            if (modalRulesData[mk].length === 0) delete modalRulesData[mk];
+            modalRulesData.splice(parseInt(btn.dataset.idx), 1);
             renderRulesSection();
         });
     });
 }
 
 document.getElementById('add-rule-btn').addEventListener('click', () => {
-    const mk = rulesMonthKey();
-    if (!modalRulesData[mk]) modalRulesData[mk] = [];
-    modalRulesData[mk].push({ dayOfWeek: 3, shiftType: '24h', count: 1 }); // default: Quinta, 24h, 1x
-    renderRulesSection();
-});
-
-document.getElementById('rules-prev-month').addEventListener('click', () => {
-    modalRulesMonth--;
-    if (modalRulesMonth < 0) { modalRulesMonth = 11; modalRulesYear--; }
-    renderRulesSection();
-});
-document.getElementById('rules-next-month').addEventListener('click', () => {
-    modalRulesMonth++;
-    if (modalRulesMonth > 11) { modalRulesMonth = 0; modalRulesYear++; }
+    modalRulesData.push({ dayOfWeek: 3, shiftType: '24h', count: 1 }); // default: Quinta, 24h, 1x
     renderRulesSection();
 });
 
@@ -2530,9 +2513,7 @@ document.getElementById('add-doctor-btn').addEventListener('click', () => {
     document.querySelectorAll('.avail-mode-toggle:not(.fixed-mode-toggle) .mode-btn').forEach(b => {
         b.classList.toggle('active', b.dataset.mode === 'available');
     });
-    modalRulesData = {};
-    modalRulesMonth = new Date().getMonth();
-    modalRulesYear = new Date().getFullYear();
+    modalRulesData = [];
     renderRulesSection();
     renderMonthlyCalendar();
     doctorModal.classList.add('open');
@@ -2566,9 +2547,7 @@ window.editDoctor = function(id) {
     modalFixedYear = new Date().getFullYear();
     if (isMonthly) renderFixedMonthlyCalendar();
 
-    modalRulesData = JSON.parse(JSON.stringify(doc.monthlyDayRules || {}));
-    modalRulesMonth = new Date().getMonth();
-    modalRulesYear = new Date().getFullYear();
+    modalRulesData = JSON.parse(JSON.stringify(getDoctorRules(doc)));
     renderRulesSection();
 
     modalAvailData = JSON.parse(JSON.stringify(doc.monthlyAvailability || {}));
@@ -2622,7 +2601,7 @@ doctorForm.addEventListener('submit', e => {
         fixedSchedule: gridData.works,
         fixedBlocked: gridData.blocked,
         fixedMonthlyData: isFixedMonthly ? { ...modalFixedMonthlyData } : {},
-        monthlyDayRules: { ...modalRulesData },
+        monthlyDayRules: [...modalRulesData],
         monthlyAvailability: { ...modalAvailData },
         monthlyUnavailability: { ...modalUnavailData },
         monthlyVacation: { ...modalVacationData },
@@ -2883,8 +2862,7 @@ function getTheoreticalFixedHours(docId, year, month) {
 
     // Add rule-based hours: iterate actual occurrences of each rule's day-of-week
     // and subtract those that fall on vacation/unavailability
-    const mk = monthKey(year, month);
-    const rules = (doc.monthlyDayRules && doc.monthlyDayRules[mk]) || [];
+    const rules = getDoctorRules(doc);
     rules.forEach(rule => {
         const shifts = rule.shiftType === '24h' ? ['day', 'night'] : [rule.shiftType];
         // Collect all dates in month matching this rule's day-of-week
