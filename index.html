@@ -34,6 +34,7 @@
             <div class="data-actions">
                 <button id="history-btn" class="btn btn-sm btn-history admin-only" title="Histórico de versões">🕐 Histórico</button>
                 <button id="pdf-btn" class="btn btn-sm btn-pdf" title="Exportar PDF">🖨️ PDF</button>
+                <button id="img-btn" class="btn btn-sm btn-img" title="Exportar Imagem">🖼️ Imagem</button>
                 <input type="file" id="import-file" accept=".json" style="display:none">
                 <div id="user-info" class="user-info" style="display:none">
                     <span id="user-name-display" class="user-name"></span>
@@ -424,6 +425,7 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
     <script src="app.js"></script>
 </body>
 </html>

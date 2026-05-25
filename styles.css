@@ -220,7 +220,7 @@ nav {
     margin-left: auto;
 }
 
-.btn-history, .btn-pdf, .btn-export, .btn-import {
+.btn-history, .btn-pdf, .btn-img, .btn-export, .btn-import {
     height: 32px !important;
     padding: 0 12px !important;
     background: rgba(255,255,255,0.06) !important;
@@ -232,7 +232,7 @@ nav {
     box-shadow: none !important;
     transition: background 0.12s, color 0.12s, border-color 0.12s !important;
 }
-.btn-history:hover, .btn-pdf:hover, .btn-export:hover, .btn-import:hover {
+.btn-history:hover, .btn-pdf:hover, .btn-img:hover, .btn-export:hover, .btn-import:hover {
     background: rgba(255,255,255,0.12) !important;
     color: rgba(255,255,255,0.9) !important;
     border-color: rgba(255,255,255,0.2) !important;
@@ -1406,6 +1406,8 @@ h4 {
     .btn-history::after { content: '🕐'; font-size: 14px; }
     .btn-pdf { font-size: 0; padding: 0 10px !important; }
     .btn-pdf::after { content: '🖨️'; font-size: 14px; }
+    .btn-img { font-size: 0; padding: 0 10px !important; }
+    .btn-img::after { content: '🖼️'; font-size: 14px; }
 
     /* Main */
     main { padding: 12px 10px; }

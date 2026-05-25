@@ -639,7 +639,9 @@ document.querySelectorAll('.nav-btn').forEach(btn => {
         document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
         document.getElementById(`${btn.dataset.view}-view`).classList.add('active');
         if (btn.dataset.view === 'users') renderUsersAdmin();
-        document.getElementById('pdf-btn').style.display = btn.dataset.view === 'schedule' ? '' : 'none';
+        const isSchedule = btn.dataset.view === 'schedule';
+        document.getElementById('pdf-btn').style.display = isSchedule ? '' : 'none';
+        document.getElementById('img-btn').style.display = isSchedule ? '' : 'none';
     });
 });
 
@@ -3155,6 +3157,7 @@ function showSaveStatus(msg) {
 
 document.getElementById('history-btn').addEventListener('click', openHistoryModal);
 document.getElementById('pdf-btn').addEventListener('click', generatePDF);
+document.getElementById('img-btn').addEventListener('click', generateImage);
 
 let _origDocTitle = null;
 
@@ -3178,6 +3181,101 @@ function generatePDF() {
 
     document.getElementById('print-view').innerHTML = isList ? buildListPdfHtml() : buildCalendarPdfHtml();
     window.print();
+}
+
+function buildImageExportHeader(month, year) {
+    return `<div style="display:flex;align-items:center;gap:14px;padding:14px 20px 12px;border-bottom:2px solid #0a1929;margin-bottom:14px;font-family:'Inter',-apple-system,sans-serif;">
+        <svg width="36" height="36" viewBox="0 0 36 36" fill="none" style="flex-shrink:0;">
+            <rect width="36" height="36" rx="8" fill="#2563eb"/>
+            <rect x="15" y="8" width="6" height="20" rx="3" fill="white"/>
+            <rect x="8" y="15" width="20" height="6" rx="3" fill="white"/>
+        </svg>
+        <div style="flex:1;">
+            <div style="font-size:18px;font-weight:800;color:#0a1929;letter-spacing:-0.3px;line-height:1.2;">Escala de Urgência</div>
+            <div style="font-size:11px;color:#6b7280;margin-top:2px;font-weight:500;">Centro Hospitalar do Baixo Vouga — Hospital de Aveiro</div>
+        </div>
+        <div style="font-size:16px;font-weight:800;color:#2563eb;letter-spacing:-0.3px;">${MONTH_NAMES[month]} ${year}</div>
+    </div>`;
+}
+
+async function generateImage() {
+    if (typeof html2canvas !== 'function') {
+        alert('Biblioteca html2canvas não carregou. Recarrega a página.');
+        return;
+    }
+
+    const btn = document.getElementById('img-btn');
+    const origLabel = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '⏳ A gerar…';
+
+    const liveGrid = document.getElementById('schedule-grid');
+    if (!liveGrid || !liveGrid.children.length) {
+        alert('Nada para exportar — a escala está vazia.');
+        btn.disabled = false;
+        btn.innerHTML = origLabel;
+        return;
+    }
+
+    // Use the live grid's current width so the clone renders with identical layout
+    const gridWidth = liveGrid.offsetWidth;
+
+    const wrapper = document.createElement('div');
+    wrapper.id = 'image-export-wrapper';
+    wrapper.style.cssText = `
+        position: absolute;
+        left: -99999px;
+        top: 0;
+        width: ${gridWidth}px;
+        padding: 20px;
+        box-sizing: content-box;
+        background: #ffffff;
+    `;
+    wrapper.innerHTML = buildImageExportHeader(currentSchedMonth, currentSchedYear);
+
+    const clonedGrid = liveGrid.cloneNode(true);
+    clonedGrid.removeAttribute('id');
+    clonedGrid.style.width = gridWidth + 'px';
+    wrapper.appendChild(clonedGrid);
+    document.body.appendChild(wrapper);
+
+    // Allow layout to settle
+    await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+    try {
+        const canvas = await html2canvas(wrapper, {
+            backgroundColor: '#ffffff',
+            scale: 2,
+            useCORS: true,
+            logging: false,
+        });
+
+        const mm = String(currentSchedMonth + 1).padStart(2, '0');
+        const mode = scheduleViewMode === 'list' ? '_lista' : '';
+        const filename = `escala_${currentSchedYear}_${mm}${mode}.jpg`;
+
+        canvas.toBlob((blob) => {
+            if (!blob) {
+                alert('Falha ao gerar imagem.');
+                return;
+            }
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+        }, 'image/jpeg', 0.92);
+    } catch (err) {
+        console.error('[image-export] error:', err);
+        alert('Erro ao gerar imagem: ' + (err.message || err));
+    } finally {
+        wrapper.remove();
+        btn.disabled = false;
+        btn.innerHTML = origLabel;
+    }
 }
 
 window.addEventListener('afterprint', () => {
