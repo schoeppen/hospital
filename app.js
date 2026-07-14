@@ -24,7 +24,7 @@ function writeLocalCache(pending) {
     try {
         localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify({
             version: 1, timestamp: Date.now(), pending,
-            doctors, schedules, rotations, terceiros
+            doctors, schedules, terceiros, rotations: rotationGrid
         }));
     } catch (e) { console.warn('localStorage cheia ou indisponível', e); }
 }
@@ -43,7 +43,7 @@ async function loadData() {
         data.forEach(row => {
             if (row.key === 'chbv_doctors') doctors = row.value;
             if (row.key === 'chbv_schedules') schedules = row.value;
-            if (row.key === 'chbv_rotations') rotations = row.value;
+            if (row.key === 'chbv_rotations') rotationGrid = migrateRotationsToGrid(row.value);
             if (row.key === 'chbv_terceiros') terceiros = row.value;
         });
     }
@@ -54,10 +54,48 @@ async function loadData() {
         console.warn(`A restaurar alterações locais pendentes (${ageMin} min)`);
         if (cache.doctors)   doctors   = cache.doctors;
         if (cache.schedules) schedules = cache.schedules;
-        if (cache.rotations) rotations = cache.rotations;
+        if (cache.rotations) rotationGrid = migrateRotationsToGrid(cache.rotations);
         if (cache.terceiros) terceiros = cache.terceiros;
         setTimeout(() => save(), 500); // push them up
     }
+}
+
+// The rotation grid is a single 8-week (N-week) master schedule, like the Excel:
+//   { cycleLength, anchorWeek, cells: { "<dayIdx>_<shift>": [ [docId,...] x cycleLength ] } }
+function createEmptyRotationGrid() {
+    return { cycleLength: 8, anchorWeek: getCurrentISOWeek(), cells: {} };
+}
+
+// Accept any stored value (new grid, legacy rotation array, or null) and
+// return a well-formed rotation grid.
+function migrateRotationsToGrid(value) {
+    if (value && !Array.isArray(value) && value.cells) {
+        return {
+            cycleLength: value.cycleLength || 8,
+            anchorWeek: value.anchorWeek || getCurrentISOWeek(),
+            cells: value.cells || {},
+        };
+    }
+    const grid = createEmptyRotationGrid();
+    if (Array.isArray(value) && value.length) {
+        let maxLen = 2, anchor = null;
+        value.forEach(r => {
+            const len = r.cycleLength || (r.weeks ? r.weeks.length : 2);
+            if (len > maxLen) maxLen = len;
+            if (!anchor) anchor = r.anchorWeek || r.startWeek;
+        });
+        grid.cycleLength = maxLen;
+        grid.anchorWeek = anchor || grid.anchorWeek;
+        value.forEach(r => {
+            const weeks = r.weeks || [[r.doctorA], [r.doctorB]]; // legacy A/B
+            const cell = [];
+            for (let w = 0; w < grid.cycleLength; w++) {
+                cell.push(weeks[w] ? weeks[w].filter(Boolean) : []);
+            }
+            grid.cells[`${r.dayIdx}_${r.shift}`] = cell;
+        });
+    }
+    return grid;
 }
 
 // ---- Auth State ----
@@ -69,7 +107,7 @@ let suppressAuthChange = false;
 let scheduleViewMode = 'calendar'; // 'calendar' or 'list'
 let doctors = [];
 let schedules = {};
-let rotations = [];
+let rotationGrid = createEmptyRotationGrid();
 let terceiros = [];
 let currentWeekStart = getMonday(new Date());
 let currentSchedMonth = new Date().getMonth();
@@ -128,7 +166,7 @@ async function saveHistory() {
     if (now - lastHistorySaveTime < HISTORY_INTERVAL_MS) return;
     lastHistorySaveTime = now;
     await db.from('app_data_history').insert({
-        doctors, schedules, rotations, terceiros
+        doctors, schedules, terceiros, rotations: rotationGrid
     });
     // Delete entries older than 30 days
     const cutoff = new Date(now - HISTORY_MAX_DAYS * 24 * 60 * 60 * 1000).toISOString();
@@ -153,12 +191,12 @@ async function restoreHistory(id) {
     await saveHistory();
     doctors = data.doctors;
     schedules = data.schedules;
-    rotations = data.rotations;
+    rotationGrid = migrateRotationsToGrid(data.rotations);
     terceiros = data.terceiros;
     await db.from('app_data').upsert([
         { key: 'chbv_doctors', value: doctors },
         { key: 'chbv_schedules', value: schedules },
-        { key: 'chbv_rotations', value: rotations },
+        { key: 'chbv_rotations', value: rotationGrid },
         { key: 'chbv_terceiros', value: terceiros },
     ]);
     renderSchedule(); renderDoctors(); renderTerceiros(); renderRotations(); renderHoursSummary();
@@ -223,7 +261,7 @@ async function performSave() {
     const entries = [
         { key: 'chbv_doctors',   value: doctors },
         { key: 'chbv_schedules', value: schedules },
-        { key: 'chbv_rotations', value: rotations },
+        { key: 'chbv_rotations', value: rotationGrid },
         { key: 'chbv_terceiros', value: terceiros },
     ];
 
@@ -692,8 +730,7 @@ function renderScheduleCalendar() {
             const assigned = getAssignedForShift(d, shift);
             const count = assigned.length;
             const statusClass = count >= DOCTORS_PER_SHIFT ? 'complete' : count > 0 ? 'partial' : 'empty';
-            const cellRotations = getRotationsForShift(dow, shift);
-            const rotationDocIds = cellRotations.map(r => getRotationDoctor(r, monday));
+            const rotationDocIds = getRotationDoctorsForShift(dow, shift, monday);
 
             html += `<div class="cal-shift-row ${statusClass}" data-date="${dk}" data-shift="${shift}">
                 <span class="cal-shift-label ${shift}">${shift === 'day' ? 'D' : 'N'}</span>`;
@@ -835,8 +872,7 @@ function renderScheduleList() {
             const count = assigned.length;
             const statusClass = count >= DOCTORS_PER_SHIFT ? 'complete' : count > 0 ? 'partial' : 'empty';
             const cellClass = shift === 'day' ? 'day-shift' : 'night-shift';
-            const cellRotations = getRotationsForShift(dow, shift);
-            const rotationDocIds = cellRotations.map(r => getRotationDoctor(r, monday));
+            const rotationDocIds = getRotationDoctorsForShift(dow, shift, monday);
 
             html += `<div class="shift-cell ${cellClass} ${statusClass} ${isWeekend ? 'weekend-cell' : ''} ${isToday ? 'today-cell' : ''}" data-date="${dk}" data-shift="${shift}">
                 <div class="status-dot"></div>`;
@@ -1060,6 +1096,9 @@ function isRuleBasedForShiftOnDate(doc, date, shift) {
 }
 
 function isFixedForShiftOnDate(doc, date, shift) {
+    // Rotation-grid assignment counts as fixed (single source of truth for rotations)
+    const rotDayIdx = (date.getDay() + 6) % 7;
+    if (getRotationDoctorsForShift(rotDayIdx, shift, getMonday(date)).includes(doc.id)) return true;
     // Check monthly fixed first (day-by-day overrides)
     if (doc.fixedMonthly) {
         const fmd = doc.fixedMonthlyData || {};
@@ -1182,8 +1221,7 @@ function openAssignModal(dk, shift) {
         const monthlyUnavail = isMonthlyUnavailable(doc, date, shift);
         const vacation = isOnVacation(doc, date, shift);
         const available = !blocked && !monthlyUnavail && (isFixed || isFlexAvail);
-        const shiftRotations = getRotationsForShift(dayIdx, shift);
-        const isRotationDoc = shiftRotations.some(r => getRotationDoctor(r, monday) === doc.id);
+        const isRotationDoc = getRotationDoctorsForShift(dayIdx, shift, monday).includes(doc.id);
         const extraLimit = doc.monthlyHoursLimit || 0;
         const currentExtra = getMonthlyExtraHoursFromSchedule(doc, date);
         const overLimit = !isFixed && (currentExtra + HOURS_PER_SHIFT) > extraLimit;
@@ -1299,14 +1337,15 @@ function getWeekNumber(date) {
     return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
 }
 
-function getRotationDoctor(rotation, weekStartDate) {
-    const refDate = isoWeekToDate(rotation.startWeek);
+// Which position in the rotation cycle a given week falls on (0-based, wraps).
+function rotationWeekIndex(weekStartDate) {
+    const refDate = isoWeekToDate(rotationGrid.anchorWeek);
     const refWeekNum = getWeekNumber(refDate);
     const currentWeekNum = getWeekNumber(weekStartDate);
-    const refYear = refDate.getFullYear();
-    const curYear = weekStartDate.getFullYear();
-    const weeksDiff = (curYear - refYear) * 52 + (currentWeekNum - refWeekNum);
-    return (weeksDiff % 2 === 0) ? rotation.doctorA : rotation.doctorB;
+    const weeksDiff = (weekStartDate.getFullYear() - refDate.getFullYear()) * 52
+        + (currentWeekNum - refWeekNum);
+    const n = rotationGrid.cycleLength || 8;
+    return ((weeksDiff % n) + n) % n; // handle past weeks (negative diff)
 }
 
 function isoWeekToDate(isoWeek) {
@@ -1318,61 +1357,18 @@ function isoWeekToDate(isoWeek) {
     return monday;
 }
 
-function getRotationsForShift(dayIdx, shift) {
-    return rotations.filter(r => r.dayIdx === dayIdx && r.shift === shift);
+// Doctor IDs on the rotation grid for a given day/shift on a given week (empty slots removed).
+function getRotationDoctorsForShift(dayIdx, shift, weekStartDate) {
+    const cell = rotationGrid.cells[`${dayIdx}_${shift}`];
+    if (!cell || !cell.length) return [];
+    const idx = rotationWeekIndex(weekStartDate);
+    return (cell[idx] || []).filter(Boolean);
 }
 
-function renderRotations() {
-    const list = document.getElementById('rotations-list');
-
-    if (rotations.length === 0) {
-        list.innerHTML = `<div class="empty-state">
-            <div class="empty-icon">🔄</div>
-            <p>Nenhuma rotação definida.<br>Clique em "Nova Rotação" para criar uma alternância entre dois médicos.</p>
-        </div>`;
-        return;
-    }
-
-    let html = '';
-    rotations.forEach(rot => {
-        const docA = doctors.find(d => d.id === rot.doctorA);
-        const docB = doctors.find(d => d.id === rot.doctorB);
-        const activeDoc = getRotationDoctor(rot, currentWeekStart);
-        const activeIsA = activeDoc === rot.doctorA;
-
-        html += `<div class="rotation-card">
-            <h3>${DAYS_FULL[rot.dayIdx]} — ${SHIFT_LABELS[rot.shift]} (${SHIFT_TIMES[rot.shift]})</h3>
-            <div class="this-week-indicator">Esta semana: ${activeIsA ? (docA ? docA.name : '?') : (docB ? docB.name : '?')}</div>
-            <div class="rotation-detail">
-                <span class="week-label week-a">Semana A</span>
-                <span>${docA ? docA.name : '(eliminado)'}</span>
-            </div>
-            <div class="rotation-detail">
-                <span class="week-label week-b">Semana B</span>
-                <span>${docB ? docB.name : '(eliminado)'}</span>
-            </div>
-            <div class="rotation-info">Referência: semana ${rot.startWeek} — ${docA ? docA.name.split(' ')[0] : '?'} começa</div>
-            <div class="card-actions write-only">
-                <button class="btn btn-sm" onclick="editRotation('${rot.id}')">Editar</button>
-                <button class="btn btn-sm btn-danger" onclick="deleteRotation('${rot.id}')">Eliminar</button>
-            </div>
-        </div>`;
-    });
-
-    list.innerHTML = html;
-}
-
-function populateRotationDoctorSelects(selectedA, selectedB) {
-    const selA = document.getElementById('rotation-doc-a');
-    const selB = document.getElementById('rotation-doc-b');
-    let opts = '<option value="">— Selecionar médico —</option>';
-    doctors.forEach(doc => {
-        opts += `<option value="${doc.id}">${doc.name}</option>`;
-    });
-    selA.innerHTML = opts;
-    selB.innerHTML = opts;
-    if (selectedA) selA.value = selectedA;
-    if (selectedB) selB.value = selectedB;
+// Is this doctor part of the rotation grid at all (any cell, any week)?
+function doctorHasRotation(docId) {
+    return Object.values(rotationGrid.cells)
+        .some(cell => cell.some(w => (w || []).includes(docId)));
 }
 
 function getCurrentISOWeek() {
@@ -1381,71 +1377,142 @@ function getCurrentISOWeek() {
     return `${d.getFullYear()}-W${String(wn).padStart(2, '0')}`;
 }
 
-document.getElementById('add-rotation-btn').addEventListener('click', () => {
-    document.getElementById('rotation-modal-title').textContent = 'Nova Rotação';
-    document.getElementById('rotation-id').value = '';
-    document.getElementById('rotation-day').value = '3';
-    document.getElementById('rotation-shift').value = 'night';
-    document.getElementById('rotation-start').value = getCurrentISOWeek();
-    populateRotationDoctorSelects('', '');
-    document.getElementById('rotation-modal').classList.add('open');
-});
+// The 14 rows of the rotation grid: each weekday × each shift.
+const ROTATION_ROWS = [];
+for (let d = 0; d < 7; d++) for (const s of SHIFTS) ROTATION_ROWS.push({ dayIdx: d, shift: s });
 
-window.editRotation = function(id) {
-    const rot = rotations.find(r => r.id === id);
-    if (!rot) return;
-    document.getElementById('rotation-modal-title').textContent = 'Editar Rotação';
-    document.getElementById('rotation-id').value = rot.id;
-    document.getElementById('rotation-day').value = rot.dayIdx;
-    document.getElementById('rotation-shift').value = rot.shift;
-    document.getElementById('rotation-start').value = rot.startWeek;
-    populateRotationDoctorSelects(rot.doctorA, rot.doctorB);
-    document.getElementById('rotation-modal').classList.add('open');
-};
+// Normalise a cell to exactly `n` weeks, each an array of up to DOCTORS_PER_SHIFT slots.
+function ensureCell(key, n) {
+    const existing = rotationGrid.cells[key] || [];
+    const norm = [];
+    for (let w = 0; w < n; w++) {
+        const week = (existing[w] || []).slice(0, DOCTORS_PER_SHIFT);
+        norm.push(week);
+    }
+    rotationGrid.cells[key] = norm;
+    return norm;
+}
 
-window.deleteRotation = function(id) {
-    if (!confirm('Eliminar esta rotação?')) return;
-    rotations = rotations.filter(r => r.id !== id);
-    save();
-    renderRotations();
-    renderSchedule();
-};
+// One <option> list for a rotation cell, empty slot first.
+function rotationCellOptions(selected) {
+    let opts = '<option value="">—</option>';
+    doctors.forEach(doc => {
+        opts += `<option value="${doc.id}"${doc.id === selected ? ' selected' : ''}>${doc.name}</option>`;
+    });
+    return opts;
+}
 
-document.getElementById('rotation-form').addEventListener('submit', e => {
-    e.preventDefault();
-    const docA = document.getElementById('rotation-doc-a').value;
-    const docB = document.getElementById('rotation-doc-b').value;
-    if (!docA || !docB) return alert('Selecione ambos os médicos.');
-    if (docA === docB) return alert('Os dois médicos devem ser diferentes.');
+// The whole 8-week (N-week) rotation as one big editable grid, like the Excel.
+function renderRotations() {
+    const mount = document.getElementById('rotations-list');
+    const canEdit = currentRole === 'admin';
+    const n = rotationGrid.cycleLength || 8;
+    const curIdx = rotationWeekIndex(currentWeekStart);
 
-    const id = document.getElementById('rotation-id').value || generateId();
-    const rotData = {
-        id, doctorA: docA, doctorB: docB,
-        dayIdx: parseInt(document.getElementById('rotation-day').value),
-        shift: document.getElementById('rotation-shift').value,
-        startWeek: document.getElementById('rotation-start').value,
-    };
+    let html = `<div class="rot-controls">
+        <div class="form-group">
+            <label for="rot-cycle-len">Duração do ciclo (semanas)</label>
+            <input type="number" id="rot-cycle-len" min="2" max="52" value="${n}" ${canEdit ? '' : 'disabled'}>
+        </div>
+        <div class="form-group">
+            <label for="rot-anchor">Semana de referência (= S1)</label>
+            <input type="week" id="rot-anchor" value="${rotationGrid.anchorWeek}" ${canEdit ? '' : 'disabled'}>
+        </div>
+        <div class="rot-controls-note">Semana atual: <strong>S${curIdx + 1}</strong></div>
+    </div>`;
 
-    const idx = rotations.findIndex(r => r.id === id);
-    if (idx >= 0) rotations[idx] = rotData;
-    else rotations.push(rotData);
+    html += `<div class="rot-grid-wrap"><table class="rot-grid"><thead><tr><th class="rot-rowhead">Dia / Turno</th>`;
+    for (let w = 0; w < n; w++) html += `<th class="${w === curIdx ? 'current' : ''}">S${w + 1}</th>`;
+    html += `</tr></thead><tbody>`;
 
-    save();
-    renderRotations();
-    renderSchedule();
-    document.getElementById('rotation-modal').classList.remove('open');
-});
+    ROTATION_ROWS.forEach(({ dayIdx, shift }) => {
+        const key = `${dayIdx}_${shift}`;
+        const cell = ensureCell(key, n);
+        const shiftShort = shift === 'day' ? 'Dia' : 'Noite';
+        html += `<tr class="rot-row rot-${shift}"><td class="rot-rowhead">${DAYS_FULL[dayIdx]}<span class="rot-shift">${shiftShort}</span></td>`;
+        for (let w = 0; w < n; w++) {
+            html += `<td class="${w === curIdx ? 'current' : ''}">`;
+            for (let s = 0; s < DOCTORS_PER_SHIFT; s++) {
+                html += `<select class="rot-cell" data-key="${key}" data-week="${w}" data-seat="${s}" ${canEdit ? '' : 'disabled'}>${rotationCellOptions(cell[w][s] || '')}</select>`;
+            }
+            html += `</td>`;
+        }
+        html += `</tr>`;
+    });
+    html += `</tbody></table></div>`;
 
-document.getElementById('rotation-modal-close').addEventListener('click', () => {
-    document.getElementById('rotation-modal').classList.remove('open');
-});
-document.getElementById('rotation-cancel').addEventListener('click', () => {
-    document.getElementById('rotation-modal').classList.remove('open');
-});
-document.getElementById('rotation-modal').addEventListener('click', e => {
-    if (e.target === document.getElementById('rotation-modal'))
-        document.getElementById('rotation-modal').classList.remove('open');
-});
+    mount.innerHTML = html;
+    if (!canEdit) return; // read-only: no listeners
+
+    document.getElementById('rot-cycle-len').addEventListener('change', e => {
+        let v = parseInt(e.target.value);
+        if (!v || v < 2) v = 2;
+        v = Math.min(v, 52);
+        rotationGrid.cycleLength = v;
+        Object.keys(rotationGrid.cells).forEach(k => ensureCell(k, v));
+        save();
+        renderRotations();
+        renderSchedule();
+    });
+
+    document.getElementById('rot-anchor').addEventListener('change', e => {
+        if (!e.target.value) return;
+        rotationGrid.anchorWeek = e.target.value;
+        save();
+        renderRotations();
+        renderSchedule();
+    });
+
+    mount.querySelectorAll('.rot-cell').forEach(sel => {
+        sel.addEventListener('change', () => {
+            const key = sel.dataset.key;
+            const w = +sel.dataset.week, s = +sel.dataset.seat;
+            const cell = ensureCell(key, rotationGrid.cycleLength);
+            if (sel.value && cell[w].some((d, i) => i !== s && d === sel.value)) {
+                alert('Esse médico já está nesta semana/turno.');
+                sel.value = cell[w][s] || '';
+                return;
+            }
+            cell[w][s] = sel.value || null;
+            save();
+            renderSchedule();
+            renderHoursSummary();
+        });
+    });
+}
+
+// Read-only view of a doctor's rotation assignments across the cycle (shown in their modal).
+function renderDoctorRotationView(docId) {
+    const section = document.getElementById('doctor-rotation-section');
+    const view = document.getElementById('doctor-rotation-view');
+    if (!doctorHasRotation(docId)) {
+        section.classList.add('hidden');
+        view.innerHTML = '';
+        return;
+    }
+    section.classList.remove('hidden');
+    const n = rotationGrid.cycleLength || 8;
+    const curIdx = rotationWeekIndex(currentWeekStart);
+    const rows = ROTATION_ROWS.filter(({ dayIdx, shift }) => {
+        const cell = rotationGrid.cells[`${dayIdx}_${shift}`];
+        return cell && cell.some(w => (w || []).includes(docId));
+    });
+
+    let html = `<div class="rot-grid-wrap"><table class="rot-grid rot-grid-mini"><thead><tr><th class="rot-rowhead">Dia / Turno</th>`;
+    for (let w = 0; w < n; w++) html += `<th class="${w === curIdx ? 'current' : ''}">S${w + 1}</th>`;
+    html += `</tr></thead><tbody>`;
+    rows.forEach(({ dayIdx, shift }) => {
+        const cell = rotationGrid.cells[`${dayIdx}_${shift}`];
+        html += `<tr class="rot-row rot-${shift}"><td class="rot-rowhead">${DAYS_FULL[dayIdx]}<span class="rot-shift">${shift === 'day' ? 'Dia' : 'Noite'}</span></td>`;
+        for (let w = 0; w < n; w++) {
+            const on = (cell[w] || []).includes(docId);
+            html += `<td class="${w === curIdx ? 'current ' : ''}${on ? 'rot-on' : ''}">${on ? '✓' : ''}</td>`;
+        }
+        html += `</tr>`;
+    });
+    html += `</tbody></table></div>`;
+    view.innerHTML = html;
+}
 
 // ---- Auto-fill ----
 
@@ -1535,31 +1602,8 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
         });
     });
 
-    // =========================================
-    // PASS 2: Rotation doctors (fill remaining slots)
-    // =========================================
-    dates.forEach(date => {
-        const dayIdx = (date.getDay() + 6) % 7;
-        const monday = getMonday(date);
-        SHIFTS.forEach(shift => {
-            const { arr } = getSk(date, shift);
-            const shiftRotations = getRotationsForShift(dayIdx, shift);
-            shiftRotations.forEach(rot => {
-                const docId = getRotationDoctor(rot, monday);
-                const doc = doctors.find(d => d.id === docId);
-                if (!doc) return;
-                if (isBlockedOnDate(doc, date, shift)) return;
-                if (isMonthlyUnavailable(doc, date, shift)) return;
-                if (needsRestAfterNight(docId, date, shift)) return;
-                if (shift === 'night' && hasNextDayConflict(docId, date)) return;
-                if (workedOtherWeekendDay(docId, date)) return;
-                if (SHIFTS.some(s => s !== shift && getAssignedForShift(date, s).includes(docId))) return;
-                if (!arr.includes(docId) && arr.length < DOCTORS_PER_SHIFT) {
-                    arr.push(docId);
-                }
-            });
-        });
-    });
+    // Rotation-grid doctors are handled by PASS 1 above (isFixedForShiftOnDate
+    // now treats a rotation-grid assignment as fixed).
 
     // =========================================
     // PASS 2.5: Monthly day-of-week rules
@@ -2562,6 +2606,7 @@ document.getElementById('add-doctor-btn').addEventListener('click', () => {
     modalRulesData = [];
     renderRulesSection();
     renderMonthlyCalendar();
+    document.getElementById('doctor-rotation-section').classList.add('hidden');
     doctorModal.classList.add('open');
 });
 
@@ -2606,6 +2651,7 @@ window.editDoctor = function(id) {
         b.classList.toggle('active', b.dataset.mode === modalAvailMode);
     });
     renderMonthlyCalendar();
+    renderDoctorRotationView(doc.id);
     doctorModal.classList.add('open');
 };
 
@@ -2620,7 +2666,10 @@ window.deleteDoctor = function(id) {
             schedules[wk][sk] = schedules[wk][sk].filter(did => did !== id);
         });
     });
-    rotations = rotations.filter(r => r.doctorA !== id && r.doctorB !== id);
+    // Remove the doctor from every cell/week of the rotation grid.
+    Object.keys(rotationGrid.cells).forEach(key => {
+        rotationGrid.cells[key] = rotationGrid.cells[key].map(w => w.filter(d => d !== id));
+    });
     save();
     renderDoctors();
     renderRotations();
@@ -2894,14 +2943,15 @@ function getTheoreticalFixedHours(docId, year, month) {
         SHIFTS.forEach(shift => {
             // Skip if doctor is on vacation or unavailable that day
             if (isMonthlyUnavailable(doc, date, shift)) return;
+            const dayIdx = (date.getDay() + 6) % 7;
+            const inRotation = getRotationDoctorsForShift(dayIdx, shift, getMonday(date)).includes(docId);
             if (doc.fixedMonthly) {
                 const fmd = doc.fixedMonthlyData || {};
                 const dk = dateKey(date);
-                if (fmd[dk] && fmd[dk][shift]) hours += HOURS_PER_SHIFT;
+                if ((fmd[dk] && fmd[dk][shift]) || inRotation) hours += HOURS_PER_SHIFT;
             } else {
-                const dayIdx = (date.getDay() + 6) % 7;
                 const key = `${dayIdx}_${shift}`;
-                if (doc.fixedSchedule && doc.fixedSchedule[key]) hours += HOURS_PER_SHIFT;
+                if ((doc.fixedSchedule && doc.fixedSchedule[key]) || inRotation) hours += HOURS_PER_SHIFT;
             }
         });
     }
@@ -3101,7 +3151,7 @@ function exportData() {
         doctors,
         terceiros,
         schedules,
-        rotations
+        rotations: rotationGrid
     };
     const json = JSON.stringify(data, null, 2);
     const blob = new Blob([json], { type: 'application/json' });
@@ -3132,14 +3182,14 @@ function importData(file) {
             doctors = data.doctors || [];
             terceiros = data.terceiros || [];
             schedules = data.schedules || {};
-            rotations = data.rotations || [];
+            rotationGrid = migrateRotationsToGrid(data.rotations);
             save();
             renderSchedule();
             renderDoctors();
             renderTerceiros();
             renderRotations();
             showSaveStatus('Importado!');
-            alert(`Dados importados com sucesso!\n${doctors.length} médicos, ${terceiros.length} terceiros, ${rotations.length} rotações.`);
+            alert(`Dados importados com sucesso!\n${doctors.length} médicos, ${terceiros.length} terceiros.`);
         } catch (err) {
             alert('Erro ao ler o ficheiro: ' + err.message);
         }

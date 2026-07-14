@@ -1303,6 +1303,53 @@ h4 {
     border-top: 1px solid var(--gray-100); background: var(--gray-50);
 }
 
+/* Rotation cycle: controls above the big grid */
+.rot-controls {
+    display: flex; gap: 18px; align-items: flex-end; flex-wrap: wrap;
+    margin-bottom: 16px;
+}
+.rot-controls .form-group { margin: 0; }
+.rot-controls input { width: 190px; }
+.rot-controls-note {
+    font-size: 13px; color: var(--gray-600);
+    padding: 8px 14px; background: var(--brand-50);
+    border: 1px solid var(--brand-100); border-radius: var(--radius-sm);
+}
+.rot-controls-note strong { color: var(--brand-500); }
+
+/* The big 8-week rotation grid (like the Excel) */
+.rot-grid-wrap { overflow-x: auto; border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); border: 1px solid var(--gray-200); }
+.rot-grid { border-collapse: collapse; width: 100%; background: var(--card); font-size: 13px; }
+.rot-grid th, .rot-grid td {
+    border: 1px solid var(--gray-200); padding: 5px 6px;
+    text-align: center; vertical-align: middle;
+}
+.rot-grid thead th {
+    background: var(--gray-100); color: var(--gray-700);
+    font-weight: 700; font-size: 12px; position: sticky; top: 0;
+}
+.rot-grid th.current, .rot-grid td.current { background: var(--brand-50); }
+.rot-grid thead th.current { background: var(--brand-100); color: var(--brand-600); }
+.rot-rowhead {
+    text-align: left !important; white-space: nowrap; font-weight: 600;
+    color: var(--gray-800); background: var(--surface);
+    position: sticky; left: 0; z-index: 1; min-width: 120px;
+}
+.rot-grid thead .rot-rowhead { z-index: 2; }
+.rot-shift {
+    display: inline-block; margin-left: 8px; font-weight: 600;
+    font-size: 11px; padding: 1px 8px; border-radius: var(--radius-full);
+}
+.rot-row.rot-day    .rot-shift { background: var(--shift-day-light);   color: var(--shift-day-text); }
+.rot-row.rot-night  .rot-shift { background: var(--shift-night-light); color: var(--shift-night-text); }
+.rot-cell { width: 100%; min-width: 104px; font-size: 12.5px; padding: 4px 6px; margin: 2px 0; }
+.rot-cell:disabled { background: var(--gray-50); color: var(--gray-700); opacity: 1; }
+
+/* Read-only mini grid in the doctor modal */
+.rot-grid-mini td { font-weight: 700; color: var(--gray-300); }
+.rot-grid-mini td.rot-on { color: var(--green); background: var(--green-light); }
+.rot-grid-mini td.current.rot-on { background: var(--green-light); }
+
 /* ============================================================
    HOURS SUMMARY
    ============================================================ */
