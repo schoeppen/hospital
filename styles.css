@@ -1317,6 +1317,14 @@ h4 {
 }
 .rot-controls-note strong { color: var(--brand-500); }
 
+/* Colour legend (one chip per doctor) above the grid */
+.rot-legend { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.rot-legend-item {
+    font-size: 12px; font-weight: 600; padding: 3px 10px;
+    border-radius: var(--radius-full); white-space: nowrap;
+    border: 1px solid rgba(0,0,0,0.06);
+}
+
 /* The big 8-week rotation grid (like the Excel) */
 .rot-grid-wrap { overflow-x: auto; border-radius: var(--radius-lg); box-shadow: var(--shadow-sm); border: 1px solid var(--gray-200); }
 .rot-grid { border-collapse: collapse; width: 100%; background: var(--card); font-size: 13px; }

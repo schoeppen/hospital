@@ -1403,6 +1403,18 @@ function rotationCellOptions(selected) {
     return opts;
 }
 
+// Stable per-doctor colour: hue evenly spread by the doctor's position in the list.
+function doctorHue(id) {
+    const i = doctors.findIndex(d => d.id === id);
+    if (i < 0) return null;
+    return Math.round((i * 360) / Math.max(doctors.length, 1));
+}
+// Inline style for a rotation cell/swatch tinted with the doctor's colour ('' if empty/unknown).
+function doctorColorCss(id) {
+    const h = doctorHue(id);
+    return h == null ? '' : `background-color:hsl(${h} 68% 90%);color:hsl(${h} 55% 26%)`;
+}
+
 // The whole 8-week (N-week) rotation as one big editable grid, like the Excel.
 function renderRotations() {
     const mount = document.getElementById('rotations-list');
@@ -1422,6 +1434,11 @@ function renderRotations() {
         <div class="rot-controls-note">Semana atual: <strong>S${curIdx + 1}</strong></div>
     </div>`;
 
+    if (doctors.length) {
+        html += `<div class="rot-legend">` + doctors.map(d =>
+            `<span class="rot-legend-item" style="${doctorColorCss(d.id)}">${d.name}</span>`).join('') + `</div>`;
+    }
+
     html += `<div class="rot-grid-wrap"><table class="rot-grid"><thead><tr><th class="rot-rowhead">Dia / Turno</th>`;
     for (let w = 0; w < n; w++) html += `<th class="${w === curIdx ? 'current' : ''}">S${w + 1}</th>`;
     html += `</tr></thead><tbody>`;
@@ -1434,7 +1451,7 @@ function renderRotations() {
         for (let w = 0; w < n; w++) {
             html += `<td class="${w === curIdx ? 'current' : ''}">`;
             for (let s = 0; s < DOCTORS_PER_SHIFT; s++) {
-                html += `<select class="rot-cell" data-key="${key}" data-week="${w}" data-seat="${s}" ${canEdit ? '' : 'disabled'}>${rotationCellOptions(cell[w][s] || '')}</select>`;
+                html += `<select class="rot-cell" data-key="${key}" data-week="${w}" data-seat="${s}" style="${doctorColorCss(cell[w][s] || '')}" ${canEdit ? '' : 'disabled'}>${rotationCellOptions(cell[w][s] || '')}</select>`;
             }
             html += `</td>`;
         }
@@ -1475,6 +1492,7 @@ function renderRotations() {
                 return;
             }
             cell[w][s] = sel.value || null;
+            sel.setAttribute('style', doctorColorCss(sel.value)); // retint to match new pick
             save();
             renderSchedule();
             renderHoursSummary();
@@ -1507,7 +1525,8 @@ function renderDoctorRotationView(docId) {
         html += `<tr class="rot-row rot-${shift}"><td class="rot-rowhead">${DAYS_FULL[dayIdx]}<span class="rot-shift">${shift === 'day' ? 'Dia' : 'Noite'}</span></td>`;
         for (let w = 0; w < n; w++) {
             const on = (cell[w] || []).includes(docId);
-            html += `<td class="${w === curIdx ? 'current ' : ''}${on ? 'rot-on' : ''}">${on ? '✓' : ''}</td>`;
+            const style = on ? doctorColorCss(docId) : '';
+            html += `<td class="${w === curIdx ? 'current ' : ''}${on ? 'rot-on' : ''}" style="${style}">${on ? '✓' : ''}</td>`;
         }
         html += `</tr>`;
     });
