@@ -1434,11 +1434,6 @@ function renderRotations() {
         <div class="rot-controls-note">Semana atual: <strong>S${curIdx + 1}</strong></div>
     </div>`;
 
-    if (doctors.length) {
-        html += `<div class="rot-legend">` + doctors.map(d =>
-            `<span class="rot-legend-item" style="${doctorColorCss(d.id)}">${d.name}</span>`).join('') + `</div>`;
-    }
-
     html += `<div class="rot-grid-wrap"><table class="rot-grid"><thead><tr><th class="rot-rowhead">Dia / Turno</th>`;
     for (let w = 0; w < n; w++) html += `<th class="${w === curIdx ? 'current' : ''}">S${w + 1}</th>`;
     html += `</tr></thead><tbody>`;
