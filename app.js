@@ -1340,10 +1340,11 @@ function getWeekNumber(date) {
 // Which position in the rotation cycle a given week falls on (0-based, wraps).
 function rotationWeekIndex(weekStartDate) {
     const refDate = isoWeekToDate(rotationGrid.anchorWeek);
-    const refWeekNum = getWeekNumber(refDate);
-    const currentWeekNum = getWeekNumber(weekStartDate);
-    const weeksDiff = (weekStartDate.getFullYear() - refDate.getFullYear()) * 52
-        + (currentWeekNum - refWeekNum);
+    // Both dates are Mondays (isoWeekToDate / getMonday), so the exact number of
+    // weeks between them is a clean day-count. Rounding absorbs DST hour shifts.
+    // (Avoids the ISO week-year / 52-vs-53-week bugs of week-number arithmetic.)
+    const MS_PER_WEEK = 7 * 24 * 60 * 60 * 1000;
+    const weeksDiff = Math.round((weekStartDate - refDate) / MS_PER_WEEK);
     const n = rotationGrid.cycleLength || 8;
     return ((weeksDiff % n) + n) % n; // handle past weeks (negative diff)
 }
