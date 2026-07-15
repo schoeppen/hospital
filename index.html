@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Escalas CHBV</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏥</text></svg>">
-    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="styles.css?v=3">
 </head>
 <body>
     <header>
@@ -272,7 +272,7 @@
                 </div>
                 <div id="terc-availability-section">
                     <h4>Disponibilidade Mensal</h4>
-                    <p class="help-text">Clique nos dias em que o médico <strong>pode</strong> trabalhar. Clique no dia para marcar/desmarcar ambos os turnos, ou clique em D/N individualmente.</p>
+                    <p class="help-text" id="terc-avail-help">Clique nos dias em que o médico <strong>pode</strong> trabalhar. Clique no dia para marcar/desmarcar ambos os turnos, ou clique em D/N individualmente.</p>
                     <div class="avail-controls">
                         <div class="month-nav">
                             <button type="button" class="btn btn-icon btn-sm" id="terc-avail-prev-month">◀</button>
@@ -385,6 +385,6 @@
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
-    <script src="app.js"></script>
+    <script src="app.js?v=3"></script>
 </body>
 </html>

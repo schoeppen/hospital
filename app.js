@@ -133,6 +133,11 @@ let modalTercAvailData = {};
 let modalTercAvailMonth = new Date().getMonth();
 let modalTercAvailYear = new Date().getFullYear();
 
+// Role 'tarefeiro': the terceiro card linked to the logged-in user (matched by email),
+// and a flag restricting the availability editor to shifts that still have a gap ("furo").
+let currentTerceiroId = null;
+let tercFuroOnly = false;
+
 // Modal state for monthly day rules
 let modalRulesData = []; // [ {dayOfWeek, shiftType, count}, ... ] — applies to every month
 
@@ -385,6 +390,12 @@ function getAssignedForShift(date, shift) {
     return sched[sk] || [];
 }
 
+// A shift is a "furo" (gap) when it has fewer than DOCTORS_PER_SHIFT people
+// assigned (doctors + tarefeiros count together).
+function isFuro(date, shift) {
+    return getAssignedForShift(date, shift).length < DOCTORS_PER_SHIFT;
+}
+
 // Set assigned doctors for a specific date+shift
 function setAssignedForShift(date, shift, docIds) {
     const sched = getScheduleForDate(date);
@@ -478,7 +489,8 @@ async function onSignIn(user) {
 
     document.getElementById('user-name-display').textContent = displayName;
     const roleBadge = document.getElementById('user-role-badge');
-    roleBadge.textContent = currentRole === 'admin' ? 'Admin' : 'Leitura';
+    roleBadge.textContent = currentRole === 'admin' ? 'Admin'
+        : currentRole === 'tarefeiro' ? 'Tarefeiro' : 'Leitura';
     roleBadge.className = `role-badge role-badge-${currentRole}`;
     document.getElementById('user-info').style.display = 'flex';
 
@@ -486,6 +498,15 @@ async function onSignIn(user) {
     hideLoginScreen();
 
     await loadData();
+
+    if (currentRole === 'tarefeiro') {
+        // Link this user to their terceiro card by email
+        const mine = terceiros.find(t => (t.email || '').toLowerCase() === (user.email || '').toLowerCase());
+        currentTerceiroId = mine ? mine.id : null;
+        enterTarefeiroMode();
+        return;
+    }
+
     renderSchedule();
     renderDoctors();
     renderTerceiros();
@@ -493,8 +514,20 @@ async function onSignIn(user) {
     renderHoursSummary();
 }
 
+// Lock the UI down to just the Tarefeiros tab for a 'tarefeiro' user.
+function enterTarefeiroMode() {
+    document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+    const tercNav = document.querySelector('.nav-btn[data-view="terceiros"]');
+    if (tercNav) tercNav.classList.add('active');
+    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+    document.getElementById('terceiros-view').classList.add('active');
+    document.getElementById('pdf-btn').style.display = 'none';
+    document.getElementById('img-btn').style.display = 'none';
+    renderTerceiros();
+}
+
 function applyRoleUI(role) {
-    document.body.classList.remove('role-read', 'role-write', 'role-admin');
+    document.body.classList.remove('role-read', 'role-write', 'role-admin', 'role-tarefeiro');
     document.body.classList.add(`role-${role}`);
 }
 
@@ -561,7 +594,8 @@ async function renderUsersAdmin() {
             <td>${p.email}</td>
             <td>
                 <select class="role-select" data-uid="${p.id}" ${isSelf ? 'disabled' : ''}>
-                    <option value="read" ${p.role !== 'admin' ? 'selected' : ''}>Leitura</option>
+                    <option value="read" ${(p.role !== 'admin' && p.role !== 'tarefeiro') ? 'selected' : ''}>Leitura</option>
+                    <option value="tarefeiro" ${p.role === 'tarefeiro' ? 'selected' : ''}>Tarefeiro</option>
                     <option value="admin" ${p.role === 'admin' ? 'selected' : ''}>Admin</option>
                 </select>
             </td>
@@ -2753,7 +2787,19 @@ document.getElementById('assign-close').addEventListener('click', () => {
 // ---- Terceiros Rendering ----
 function renderTerceiros() {
     const list = document.getElementById('terceiros-list');
-    if (terceiros.length === 0) {
+    const isTarefeiro = currentRole === 'tarefeiro';
+
+    // A tarefeiro only ever sees their own card.
+    const cards = isTarefeiro ? terceiros.filter(t => t.id === currentTerceiroId) : terceiros;
+
+    if (isTarefeiro && cards.length === 0) {
+        list.innerHTML = `<div class="empty-state">
+            <div class="empty-icon">🔗</div>
+            <p>A sua conta ainda não está associada a um cartão de tarefeiro.<br>Contacte o administrador para associar o seu email.</p>
+        </div>`;
+        return;
+    }
+    if (cards.length === 0) {
         list.innerHTML = `<div class="empty-state">
             <div class="empty-icon">🩺</div>
             <p>Nenhum tarefeiro registado.<br>Clique em "Adicionar Tarefeiro" para começar.</p>
@@ -2767,7 +2813,7 @@ function renderTerceiros() {
     const daysInMonth = new Date(curYear, curMonth + 1, 0).getDate();
 
     let html = '';
-    terceiros.forEach(t => {
+    cards.forEach(t => {
         let availCount = 0;
         for (let d = 1; d <= daysInMonth; d++) {
             const dt = new Date(curYear, curMonth, d);
@@ -2788,10 +2834,15 @@ function renderTerceiros() {
                 ${t.email ? `<span>✉ ${t.email}</span>` : ''}
             </div>
             <div class="avail-summary">Disponível em ${availCount} dias — ${MONTH_NAMES[curMonth]} ${curYear}</div>
+            ${isTarefeiro ? `
+            <div class="tarefeiro-hint">Só pode marcar disponibilidade nos turnos com <strong>furo</strong> (menos de ${DOCTORS_PER_SHIFT} escalados).</div>
+            <div class="card-actions">
+                <button class="btn btn-sm btn-primary" onclick="openMyAvailability()">📅 Marcar disponibilidade</button>
+            </div>` : `
             <div class="card-actions write-only">
                 <button class="btn btn-sm" onclick="editTerceiro('${t.id}')">Editar</button>
                 <button class="btn btn-sm btn-danger" onclick="deleteTerceiro('${t.id}')">Eliminar</button>
-            </div>
+            </div>`}
         </div>`;
     });
 
@@ -2825,8 +2876,15 @@ function renderTercModalCalendar() {
         const isWeekend = dow >= 5;
         const isPast = dt < today;
         const avail = modalTercAvailData[dk] || {};
-        const dayCls = avail.day ? 'avail-yes' : '';
-        const nightCls = avail.night ? 'avail-yes' : '';
+        const availDay = !!avail.day, availNight = !!avail.night;
+        // In furo-only mode (tarefeiro): a shift is selectable only if it currently has a
+        // gap and isn't in the past. An already-marked shift can always be removed.
+        const furoDay = isFuro(dt, 'day');
+        const furoNight = isFuro(dt, 'night');
+        const dayLocked = tercFuroOnly && !availDay && (isPast || !furoDay);
+        const nightLocked = tercFuroOnly && !availNight && (isPast || !furoNight);
+        const dayCls = (availDay ? 'avail-yes ' : '') + (dayLocked ? 'locked' : (tercFuroOnly && furoDay && !isPast ? 'furo-open' : ''));
+        const nightCls = (availNight ? 'avail-yes ' : '') + (nightLocked ? 'locked' : (tercFuroOnly && furoNight && !isPast ? 'furo-open' : ''));
         html += `<div class="cal-day ${isWeekend ? 'weekend' : ''} ${isPast ? 'past' : ''}" data-date="${dk}">
             <div class="day-num">${d}</div>
             <div class="day-shifts">
@@ -2840,6 +2898,7 @@ function renderTercModalCalendar() {
     container.querySelectorAll('.shift-dot').forEach(dot => {
         dot.addEventListener('click', (e) => {
             e.stopPropagation();
+            if (dot.classList.contains('locked')) return; // furo-only: not a gap → not selectable
             const dk = dot.dataset.date;
             const shift = dot.dataset.shift;
             if (!modalTercAvailData[dk]) modalTercAvailData[dk] = {};
@@ -2856,6 +2915,7 @@ function renderTercModalCalendar() {
     container.querySelectorAll('.cal-day:not(.empty)').forEach(cell => {
         cell.addEventListener('click', (e) => {
             if (e.target.classList.contains('shift-dot')) return;
+            if (tercFuroOnly) return; // furo-only: whole-day toggle disabled, use D/N dots
             const dk = cell.dataset.date;
             const d = modalTercAvailData[dk] || {};
             if (d.day && d.night) {
@@ -2869,6 +2929,9 @@ function renderTercModalCalendar() {
 }
 
 document.getElementById('add-terceiro-btn').addEventListener('click', () => {
+    tercFuroOnly = false;
+    terceiroModal.classList.remove('furo-mode');
+    document.getElementById('terc-avail-help').innerHTML = 'Clique nos dias em que o médico <strong>pode</strong> trabalhar. Clique no dia para marcar/desmarcar ambos os turnos, ou clique em D/N individualmente.';
     document.getElementById('terc-modal-title').textContent = 'Adicionar Tarefeiro';
     terceiroForm.reset();
     document.getElementById('terc-id').value = '';
@@ -2882,7 +2945,31 @@ document.getElementById('add-terceiro-btn').addEventListener('click', () => {
 window.editTerceiro = function(id) {
     const t = terceiros.find(x => x.id === id);
     if (!t) return;
+    tercFuroOnly = false;
+    terceiroModal.classList.remove('furo-mode');
+    document.getElementById('terc-avail-help').innerHTML = 'Clique nos dias em que o médico <strong>pode</strong> trabalhar. Clique no dia para marcar/desmarcar ambos os turnos, ou clique em D/N individualmente.';
     document.getElementById('terc-modal-title').textContent = 'Editar Tarefeiro';
+    document.getElementById('terc-id').value = t.id;
+    document.getElementById('terc-name').value = t.name;
+    document.getElementById('terc-specialty').value = t.specialty || '';
+    document.getElementById('terc-phone').value = t.phone || '';
+    document.getElementById('terc-email').value = t.email || '';
+    modalTercAvailData = JSON.parse(JSON.stringify(t.monthlyAvailability || {}));
+    modalTercAvailMonth = new Date().getMonth();
+    modalTercAvailYear = new Date().getFullYear();
+    renderTercModalCalendar();
+    terceiroModal.classList.add('open');
+};
+
+// Tarefeiro self-service: edit only my own availability, restricted to furo shifts.
+window.openMyAvailability = function() {
+    const t = terceiros.find(x => x.id === currentTerceiroId);
+    if (!t) return;
+    tercFuroOnly = true;
+    terceiroModal.classList.add('furo-mode');
+    document.getElementById('terc-avail-help').innerHTML =
+        `Clique em <strong>D</strong> (diurno) ou <strong>N</strong> (noturno) para se propor. Só os turnos com <strong>furo</strong> (destacados) estão disponíveis; os restantes já têm ${DOCTORS_PER_SHIFT} escalados.`;
+    document.getElementById('terc-modal-title').textContent = 'A minha disponibilidade';
     document.getElementById('terc-id').value = t.id;
     document.getElementById('terc-name').value = t.name;
     document.getElementById('terc-specialty').value = t.specialty || '';
@@ -2913,6 +3000,19 @@ window.deleteTerceiro = function(id) {
 terceiroForm.addEventListener('submit', e => {
     e.preventDefault();
     const id = document.getElementById('terc-id').value || generateId();
+
+    if (tercFuroOnly) {
+        // Tarefeiro self-service: only touch their own availability, leave every other field intact.
+        const t = terceiros.find(x => x.id === id);
+        if (t) {
+            t.monthlyAvailability = { ...modalTercAvailData };
+            save();
+        }
+        renderTerceiros();
+        terceiroModal.classList.remove('open');
+        return;
+    }
+
     const tData = {
         id,
         name: document.getElementById('terc-name').value.trim(),
