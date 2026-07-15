@@ -1501,6 +1501,32 @@ h4 {
 
     /* Login card */
     .login-card { padding: 32px 24px; }
+
+    /* Header — tidy 2-row layout (logo+actions, then nav) */
+    .subtitle { display: none; }
+    .logo-area { flex: 1 1 auto; min-width: 0; }
+    .logo-area > div { min-width: 0; }
+    header h1 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .data-actions { flex: 0 0 auto; margin-left: auto; gap: 6px; align-items: center; }
+    /* Export/history buttons -> icon-only (override specificity with id + !important) */
+    #history-btn, #pdf-btn, #img-btn {
+        font-size: 0 !important; padding: 0 !important;
+        width: 34px; min-width: 34px; justify-content: center;
+    }
+    #history-btn::after { content: '🕐'; font-size: 15px; }
+    #pdf-btn::after     { content: '🖨️'; font-size: 15px; }
+    #img-btn::after     { content: '🖼️'; font-size: 15px; }
+
+    /* Rotation grid — stacked controls + compact scrolling table */
+    .rot-controls { flex-direction: column; align-items: stretch; gap: 10px; margin-bottom: 12px; }
+    .rot-controls .form-group { width: 100%; }
+    .rot-controls input { width: 100%; }
+    .rot-controls-note { text-align: center; }
+    .rot-grid { width: auto; }
+    .rot-grid th, .rot-grid td { padding: 4px; }
+    .rot-rowhead { min-width: 76px; font-size: 12px; white-space: normal; }
+    .rot-shift { margin-left: 0; margin-top: 3px; display: inline-block; }
+    .rot-cell { min-width: 92px; font-size: 12px; }
 }
 
 /* ============================================================
