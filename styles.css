@@ -1527,6 +1527,21 @@ h4 {
     .rot-rowhead { min-width: 76px; font-size: 12px; white-space: normal; }
     .rot-shift { margin-left: 0; margin-top: 3px; display: inline-block; }
     .rot-cell { min-width: 92px; font-size: 12px; }
+
+    /* Schedule LIST view — fit its 3 columns with no horizontal scroll */
+    #schedule-grid.sched-list { min-width: 0; }
+    .sched-list .shift-col-header { font-size: 11px; padding: 8px 4px; }
+    .sched-list .shift-col-header small { display: block; font-size: 9px; margin-top: 1px; }
+    .sched-list .shift-cell { padding: 5px 4px; }
+    .sched-list .day-row-label { padding: 6px 4px; }
+    .sched-list .doctor-tag { font-size: 10px; padding: 2px 5px; }
+
+    /* Hours table — denser + keep the doctor-name column pinned while scrolling months */
+    .hours-table th, .hours-table td { padding: 7px 6px; font-size: 12px; }
+    .hours-table thead th.doctor-header, .hours-table td.doctor-name {
+        position: sticky; left: 0; z-index: 2;
+        min-width: 104px !important; max-width: 116px; white-space: normal;
+    }
 }
 
 /* ============================================================

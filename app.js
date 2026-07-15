@@ -697,6 +697,8 @@ function renderScheduleCalendar() {
         `${MONTH_NAMES[currentSchedMonth]} ${currentSchedYear}`;
 
     grid.style.gridTemplateColumns = 'repeat(7, 1fr)';
+    grid.classList.add('sched-calendar');
+    grid.classList.remove('sched-list');
 
     const todayStr = new Date().toDateString();
 
@@ -842,6 +844,8 @@ function renderScheduleList() {
         `${MONTH_NAMES[currentSchedMonth]} ${currentSchedYear}`;
 
     grid.style.gridTemplateColumns = 'auto 1fr 1fr';
+    grid.classList.add('sched-list');
+    grid.classList.remove('sched-calendar');
 
     let html = '';
     const todayStr = new Date().toDateString();
