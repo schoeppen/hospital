@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Escalas CHBV</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏥</text></svg>">
-    <link rel="stylesheet" href="styles.css?v=3">
+    <link rel="stylesheet" href="styles.css?v=4">
 </head>
 <body>
     <header>
@@ -370,6 +370,7 @@
                     <label for="invite-role">Nível de acesso</label>
                     <select id="invite-role">
                         <option value="read" selected>Leitura — ver escalas sem editar</option>
+                        <option value="tarefeiro">Tarefeiro — só marca a sua disponibilidade</option>
                         <option value="admin">Admin — acesso total + gerir utilizadores</option>
                     </select>
                 </div>
@@ -385,6 +386,6 @@
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
-    <script src="app.js?v=3"></script>
+    <script src="app.js?v=4"></script>
 </body>
 </html>
