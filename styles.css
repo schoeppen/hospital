@@ -1466,8 +1466,8 @@ h4 {
     .view-toggle { gap: 2px; }
     .view-toggle-btn { font-size: 11px; padding: 0 8px; height: 30px; }
 
-    /* Calendar — horizontal scroll on mobile */
-    .schedule-grid { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+    /* Calendar — scroll INSIDE its own container so the page (and header) never widen */
+    .schedule-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
     .cal-day { min-width: 110px; }
     #schedule-grid { min-width: 770px; }
 
