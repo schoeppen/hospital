@@ -2835,7 +2835,7 @@ function renderTerceiros() {
             </div>
             <div class="avail-summary">Disponível em ${availCount} dias — ${MONTH_NAMES[curMonth]} ${curYear}</div>
             ${isTarefeiro ? `
-            <div class="tarefeiro-hint">Bem-vindo, <strong>${t.name}</strong> 👋</div>
+            <div class="tarefeiro-hint">Bem-vindo, <strong>${t.name.split(' ')[0]}</strong> 👋</div>
             <div class="card-actions">
                 <button class="btn btn-sm btn-primary" onclick="openMyAvailability()">📅 Marcar disponibilidade</button>
             </div>` : `
