@@ -2835,7 +2835,7 @@ function renderTerceiros() {
             </div>
             <div class="avail-summary">Disponível em ${availCount} dias — ${MONTH_NAMES[curMonth]} ${curYear}</div>
             ${isTarefeiro ? `
-            <div class="tarefeiro-hint">Só pode marcar disponibilidade nos turnos com <strong>furo</strong> (menos de ${DOCTORS_PER_SHIFT} escalados).</div>
+            <div class="tarefeiro-hint">Bem-vindo, <strong>${t.name}</strong> 👋</div>
             <div class="card-actions">
                 <button class="btn btn-sm btn-primary" onclick="openMyAvailability()">📅 Marcar disponibilidade</button>
             </div>` : `
