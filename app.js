@@ -2814,6 +2814,8 @@ function renderTerceiros() {
 
     let html = '';
     cards.forEach(t => {
+        const firstName = (t.name || '').split(' ')[0];
+        const greeting = /a$/i.test(firstName) ? 'Bem-vinda' : 'Bem-vindo'; // feminine if name ends in "a"
         let availCount = 0;
         for (let d = 1; d <= daysInMonth; d++) {
             const dt = new Date(curYear, curMonth, d);
@@ -2835,7 +2837,7 @@ function renderTerceiros() {
             </div>
             <div class="avail-summary">Disponível em ${availCount} dias — ${MONTH_NAMES[curMonth]} ${curYear}</div>
             ${isTarefeiro ? `
-            <div class="tarefeiro-hint">Bem-vindo, <strong>${t.name.split(' ')[0]}</strong> 👋</div>
+            <div class="tarefeiro-hint">${greeting}, <strong>${firstName}</strong> 👋</div>
             <div class="card-actions">
                 <button class="btn btn-sm btn-primary" onclick="openMyAvailability()">📅 Marcar disponibilidade</button>
             </div>` : `
