@@ -1662,6 +1662,30 @@ function getCurrentMonthHours(docId, dates) {
     return hours;
 }
 
+// A same-day day+night pairing is only a *deliberate* 24h when the doctor can do 24h,
+// or both shifts come from a genuine fixed source (weekly schedule / monthly / rotation grid).
+// Used to block accidental 24h stints created by combining day-of-week rules with fixed shifts.
+function isDeliberate24hDate(doc, date) {
+    if (doc.can24h === true) return true;
+    const dayIdx = (date.getDay() + 6) % 7;
+    if (doc.fixedSchedule && doc.fixedSchedule[`${dayIdx}_day`] && doc.fixedSchedule[`${dayIdx}_night`]) return true;
+    if (doc.fixedMonthly) {
+        const fmd = doc.fixedMonthlyData || {};
+        const dk = dateKey(date);
+        if (fmd[dk] && fmd[dk].day && fmd[dk].night) return true;
+    }
+    const monday = getMonday(date);
+    if (getRotationDoctorsForShift(dayIdx, 'day', monday).includes(doc.id) &&
+        getRotationDoctorsForShift(dayIdx, 'night', monday).includes(doc.id)) return true;
+    return false;
+}
+
+// Would adding this doctor to (date, shift) create an *accidental* same-day 24h?
+function wouldDoubleBookSameDay(doc, date, shift) {
+    const otherShift = shift === 'day' ? 'night' : 'day';
+    return getAssignedForShift(date, otherShift).includes(doc.id) && !isDeliberate24hDate(doc, date);
+}
+
 document.getElementById('auto-fill-btn').addEventListener('click', () => {
     const dates = getMonthDates();
 
@@ -1681,6 +1705,7 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
             const { arr } = getSk(date, shift);
             doctors.forEach(doc => {
                 if (isFixedForShiftOnDate(doc, date, shift) && !isMonthlyUnavailable(doc, date, shift)) {
+                    if (wouldDoubleBookSameDay(doc, date, shift)) return; // no accidental 24h for non-24h doctors
                     if (!arr.includes(doc.id) && arr.length < DOCTORS_PER_SHIFT && !workedOtherWeekendDay(doc.id, date)) {
                         arr.push(doc.id);
                     }
@@ -1729,6 +1754,9 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
 
                 shifts.forEach(s => {
                     const { arr } = getSk(date, s);
+                    // A single-shift rule must not stack onto the other shift of the same day
+                    // (that would be an accidental 24h). 24h rules place both deliberately.
+                    if (rule.shiftType !== '24h' && wouldDoubleBookSameDay(doc, date, s)) return;
                     if (!arr.includes(doc.id) && arr.length < DOCTORS_PER_SHIFT) {
                         arr.push(doc.id);
                     }
@@ -1754,7 +1782,9 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
             SHIFTS.forEach(shift => {
                 // Conta apenas se marcado como indisponível, não é férias, E era um turno fixo
                 if (unavail[dk] && unavail[dk][shift] && !(vacation[dk] && vacation[dk][shift])) {
-                    if (isFixedForShiftOnDate(doc, date, shift)) {
+                    // Only weekly-fixed / monthly / rotation misses need recovery — day-of-week
+                    // rules re-route themselves to another matching day, so they don't owe a debt.
+                    if (isFixedForShiftOnDate(doc, date, shift) && !isRuleBasedShift(doc, date, shift)) {
                         debt++;
                     }
                 }
@@ -1778,6 +1808,7 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
                     .filter(doc => !needsRestAfterNight(doc.id, date, shift))
                     .filter(doc => shift !== 'night' || !hasNextDayConflict(doc.id, date))
                     .filter(doc => !workedOtherWeekendDay(doc.id, date))
+                    .filter(doc => !wouldDoubleBookSameDay(doc, date, shift))
                     .map(doc => ({
                         doc,
                         debt: recoveryDebt[doc.id] || 0,
@@ -1863,7 +1894,13 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
             const alreadyHas24 = weekendDates.some(d =>
                 getAssignedForShift(d, 'day').includes(doc.id) && getAssignedForShift(d, 'night').includes(doc.id));
             if (alreadyHas24) return;
-            for (const date of weekendDates) {
+            // Prefer weekends the doctor explicitly marked available; neutral weekends only as fallback.
+            const ordered = [...weekendDates].sort((a, b) => {
+                const av = (isFlexAvailableOnDate(doc, a, 'day') && isFlexAvailableOnDate(doc, a, 'night')) ? 0 : 1;
+                const bv = (isFlexAvailableOnDate(doc, b, 'day') && isFlexAvailableOnDate(doc, b, 'night')) ? 0 : 1;
+                return av - bv;
+            });
+            for (const date of ordered) {
                 const { arr: dayArr } = getSk(date, 'day');
                 const { arr: nightArr } = getSk(date, 'night');
                 if (dayArr.includes(doc.id) || nightArr.includes(doc.id)) continue;
@@ -1998,12 +2035,9 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
                         if (!doc) continue;
                         // Never move a doctor from a fixed shift
                         if (isFixedForShiftOnDate(doc, srcDate, srcShift)) continue;
-                        // Never dismantle a weekend 24h pairing (day+night same weekend day)
-                        const srcDow = (srcDate.getDay() + 6) % 7;
-                        if (srcDow >= 5) {
-                            const pairedShift = srcShift === 'day' ? 'night' : 'day';
-                            if (getAssignedForShift(srcDate, pairedShift).includes(docId)) continue;
-                        }
+                        // Never dismantle a 24h pairing (day+night same day) — weekday or weekend
+                        const pairedShift = srcShift === 'day' ? 'night' : 'day';
+                        if (getAssignedForShift(srcDate, pairedShift).includes(docId)) continue;
                         if (emptyArr.includes(docId)) continue;
                         // Not already working another shift on the target date
                         if (SHIFTS.some(s => s !== shift && getAssignedForShift(date, s).includes(docId))) continue;
