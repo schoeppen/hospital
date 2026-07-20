@@ -1416,6 +1416,40 @@ function getCurrentISOWeek() {
     return `${d.getFullYear()}-W${String(wn).padStart(2, '0')}`;
 }
 
+// ISO week string (YYYY-Www) for a date, using the ISO week-year (Thursday rule)
+// so it round-trips with isoWeekToDate even across year boundaries.
+function isoWeekString(date) {
+    const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+    d.setUTCDate(d.getUTCDate() + 4 - (d.getUTCDay() || 7)); // move to Thursday
+    const isoYear = d.getUTCFullYear();
+    const yearStart = new Date(Date.UTC(isoYear, 0, 1));
+    const wn = Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+    return `${isoYear}-W${String(wn).padStart(2, '0')}`;
+}
+
+// Build <option>s for the reference-week picker: one week per option, labelled
+// with its Mon–Sun date range. Consistent across desktop/tablet/phone (unlike
+// the native <input type="week"> picker, which differs per OS).
+function buildAnchorWeekOptions(selectedIso) {
+    const MON = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+    const base = isoWeekToDate(getCurrentISOWeek());
+    let opts = '';
+    let hasSelected = false;
+    for (let i = -8; i <= 52; i++) {
+        const mon = new Date(base); mon.setDate(base.getDate() + i * 7);
+        const sun = new Date(mon); sun.setDate(mon.getDate() + 6);
+        const iso = isoWeekString(mon);
+        if (iso === selectedIso) hasSelected = true;
+        const label = `${mon.getDate()} ${MON[mon.getMonth()]} – ${sun.getDate()} ${MON[sun.getMonth()]} ${sun.getFullYear()}`;
+        opts += `<option value="${iso}"${iso === selectedIso ? ' selected' : ''}>${label}</option>`;
+    }
+    // Keep a stored anchor that falls outside the visible range selectable.
+    if (selectedIso && !hasSelected) {
+        opts = `<option value="${selectedIso}" selected>${selectedIso}</option>` + opts;
+    }
+    return opts;
+}
+
 // The 14 rows of the rotation grid: each weekday × each shift.
 const ROTATION_ROWS = [];
 for (let d = 0; d < 7; d++) for (const s of SHIFTS) ROTATION_ROWS.push({ dayIdx: d, shift: s });
@@ -1467,7 +1501,7 @@ function renderRotations() {
         </div>
         <div class="form-group">
             <label for="rot-anchor">Semana de referência (= S1)</label>
-            <input type="week" id="rot-anchor" value="${rotationGrid.anchorWeek}" ${canEdit ? '' : 'disabled'}>
+            <select id="rot-anchor" ${canEdit ? '' : 'disabled'}>${buildAnchorWeekOptions(rotationGrid.anchorWeek)}</select>
         </div>
         <div class="rot-controls-note">Semana atual: <strong>S${curIdx + 1}</strong></div>
     </div>`;
