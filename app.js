@@ -1814,6 +1814,39 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
     });
 
     // =========================================
+    // PASS 3a-weekend (prioritised): give each 24h-capable doctor ONE full
+    // 24h shift (day+night, same day) on a weekend BEFORE any 12h singles are
+    // spread. Doctor-centric so every eligible doctor gets a turn — prevents the
+    // "12h num fim-de-semana + 12h noutro" split.
+    // =========================================
+    const weekendDates = dates.filter(d => { const w = (d.getDay() + 6) % 7; return w === 5 || w === 6; });
+    doctors
+        .filter(doc => doc.can24h === true && (doc.monthlyHoursLimit || 0) > 0)
+        .map(doc => ({ doc, extra: getMonthlyExtraHoursForAutoFill(doc, dates[0]) }))
+        .sort((a, b) => a.extra - b.extra)
+        .forEach(({ doc }) => {
+            // Skip doctors who already have a full weekend 24h
+            const alreadyHas24 = weekendDates.some(d =>
+                getAssignedForShift(d, 'day').includes(doc.id) && getAssignedForShift(d, 'night').includes(doc.id));
+            if (alreadyHas24) return;
+            for (const date of weekendDates) {
+                const { arr: dayArr } = getSk(date, 'day');
+                const { arr: nightArr } = getSk(date, 'night');
+                if (dayArr.includes(doc.id) || nightArr.includes(doc.id)) continue;
+                if (dayArr.length >= DOCTORS_PER_SHIFT || nightArr.length >= DOCTORS_PER_SHIFT) continue;
+                if (isBlockedOnDate(doc, date, 'day') || isBlockedOnDate(doc, date, 'night')) continue;
+                if (isMonthlyUnavailable(doc, date, 'day') || isMonthlyUnavailable(doc, date, 'night')) continue;
+                if (needsRestAfterNight(doc.id, date, 'day')) continue;
+                if (hasNextDayConflict(doc.id, date)) continue;
+                if (workedOtherWeekendDay(doc.id, date)) continue;
+                if ((getMonthlyExtraHoursForAutoFill(doc, date) + 24) > (doc.monthlyHoursLimit || 0)) continue;
+                dayArr.push(doc.id);
+                nightArr.push(doc.id);
+                break; // one weekend 24h per doctor
+            }
+        });
+
+    // =========================================
     // PASS 3a: Prefer 24h assignments for doctors with can24h=true
     // Fill both day+night slots simultaneously for eligible doctors
     // =========================================
@@ -1843,49 +1876,6 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
                     extraHours: getMonthlyExtraHoursForAutoFill(doc, date),
                 }))
                 .sort((a, b) => a.extraHours - b.extraHours);
-
-            if (candidates.length === 0) break;
-            const chosen = candidates[0].doc;
-            dayArr.push(chosen.id);
-            nightArr.push(chosen.id);
-        }
-    });
-
-    // =========================================
-    // PASS 3a-weekend: prefer 24h (D+N same day) on Saturdays and Sundays
-    // even for doctors without explicit flex availability (neutral).
-    // Médicos preferem fazer 24h ao fim-de-semana em vez de 12+12.
-    // =========================================
-    dates.filter(d => {
-        const dow = (d.getDay() + 6) % 7;
-        return dow === 5 || dow === 6; // Sat or Sun
-    }).forEach(date => {
-        const { arr: dayArr } = getSk(date, 'day');
-        const { arr: nightArr } = getSk(date, 'night');
-
-        while (dayArr.length < DOCTORS_PER_SHIFT && nightArr.length < DOCTORS_PER_SHIFT) {
-            const candidates = doctors
-                .filter(doc => doc.can24h === true)
-                .filter(doc => !dayArr.includes(doc.id) && !nightArr.includes(doc.id))
-                .filter(doc => !isBlockedOnDate(doc, date, 'day') && !isBlockedOnDate(doc, date, 'night'))
-                .filter(doc => !isMonthlyUnavailable(doc, date, 'day') && !isMonthlyUnavailable(doc, date, 'night'))
-                .filter(doc => !needsRestAfterNight(doc.id, date, 'day'))
-                .filter(doc => !hasNextDayConflict(doc.id, date))
-                .filter(doc => !workedOtherWeekendDay(doc.id, date))
-                .filter(doc => {
-                    const limit = doc.monthlyHoursLimit || 0;
-                    if (limit <= 0) return false;
-                    const extra = getMonthlyExtraHoursForAutoFill(doc, date);
-                    return (extra + 24) <= limit; // needs 24h headroom
-                })
-                .map(doc => ({
-                    doc,
-                    extraHours: getMonthlyExtraHoursForAutoFill(doc, date),
-                    availPriority:
-                        (isFlexAvailableOnDate(doc, date, 'day') && isFlexAvailableOnDate(doc, date, 'night'))
-                            ? 0 : 1,
-                }))
-                .sort((a, b) => a.availPriority - b.availPriority || a.extraHours - b.extraHours);
 
             if (candidates.length === 0) break;
             const chosen = candidates[0].doc;
@@ -1974,6 +1964,12 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
                         if (!doc) continue;
                         // Never move a doctor from a fixed shift
                         if (isFixedForShiftOnDate(doc, srcDate, srcShift)) continue;
+                        // Never dismantle a weekend 24h pairing (day+night same weekend day)
+                        const srcDow = (srcDate.getDay() + 6) % 7;
+                        if (srcDow >= 5) {
+                            const pairedShift = srcShift === 'day' ? 'night' : 'day';
+                            if (getAssignedForShift(srcDate, pairedShift).includes(docId)) continue;
+                        }
                         if (emptyArr.includes(docId)) continue;
                         // Not already working another shift on the target date
                         if (SHIFTS.some(s => s !== shift && getAssignedForShift(date, s).includes(docId))) continue;
