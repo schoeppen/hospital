@@ -792,6 +792,18 @@ function renderScheduleCalendar() {
                 </div>`;
             });
 
+            // Pending tarefeiro requests: shown dashed; the ✓ accepts them onto the shift.
+            if (currentRole === 'admin') {
+                pendingRequestsForShift(d, shift).forEach(t => {
+                    html += `<div class="doctor-tag pending-tag"
+                        data-fullname="${t.name}" data-shift-type="Pedido de tarefeiro">
+                        <span>${t.name.split(' ')[0]}</span>
+                        <button class="accept-req" data-terc="${t.id}" data-date="${dk}" data-shift="${shift}" title="ACEITAR: escalar ${t.name} neste turno">✓</button>
+                        <button class="decline-req" data-terc="${t.id}" data-date="${dk}" data-shift="${shift}" title="RECUSAR o pedido de ${t.name}">✕</button>
+                    </div>`;
+                });
+            }
+
             if (count < DOCTORS_PER_SHIFT) {
                 html += `<div class="add-slot" data-date="${dk}" data-shift="${shift}">+</div>`;
             }
@@ -803,6 +815,24 @@ function renderScheduleCalendar() {
     });
 
     grid.innerHTML = html;
+
+    // Event: accept a pending tarefeiro request straight from the schedule
+    grid.querySelectorAll('.accept-req').forEach(el => {
+        el.addEventListener('click', e => {
+            e.stopPropagation();
+            if (currentRole !== 'admin') return;
+            acceptTerceiroRequest(el.dataset.terc, el.dataset.date, el.dataset.shift);
+        });
+    });
+
+    // Event: decline a pending tarefeiro request from the schedule
+    grid.querySelectorAll('.decline-req').forEach(el => {
+        el.addEventListener('click', e => {
+            e.stopPropagation();
+            if (currentRole !== 'admin') return;
+            declineTerceiroRequest(el.dataset.terc, el.dataset.date, el.dataset.shift);
+        });
+    });
 
     // Event: add doctor
     grid.querySelectorAll('.add-slot').forEach(el => {
@@ -935,6 +965,18 @@ function renderScheduleList() {
                 </div>`;
             });
 
+            // Pending tarefeiro requests: shown dashed; the ✓ accepts them onto the shift.
+            if (currentRole === 'admin') {
+                pendingRequestsForShift(d, shift).forEach(t => {
+                    html += `<div class="doctor-tag pending-tag"
+                        data-fullname="${t.name}" data-shift-type="Pedido de tarefeiro">
+                        <span>${t.name}</span>
+                        <button class="accept-req" data-terc="${t.id}" data-date="${dk}" data-shift="${shift}" title="ACEITAR: escalar ${t.name} neste turno">✓</button>
+                        <button class="decline-req" data-terc="${t.id}" data-date="${dk}" data-shift="${shift}" title="RECUSAR o pedido de ${t.name}">✕</button>
+                    </div>`;
+                });
+            }
+
             if (count < DOCTORS_PER_SHIFT) {
                 html += `<div class="add-slot" data-date="${dk}" data-shift="${shift}">+ Médico</div>`;
             }
@@ -944,6 +986,24 @@ function renderScheduleList() {
     });
 
     grid.innerHTML = html;
+
+    // Event: accept a pending tarefeiro request straight from the list view
+    grid.querySelectorAll('.accept-req').forEach(el => {
+        el.addEventListener('click', e => {
+            e.stopPropagation();
+            if (currentRole !== 'admin') return;
+            acceptTerceiroRequest(el.dataset.terc, el.dataset.date, el.dataset.shift);
+        });
+    });
+
+    // Event: decline a pending tarefeiro request from the schedule
+    grid.querySelectorAll('.decline-req').forEach(el => {
+        el.addEventListener('click', e => {
+            e.stopPropagation();
+            if (currentRole !== 'admin') return;
+            declineTerceiroRequest(el.dataset.terc, el.dataset.date, el.dataset.shift);
+        });
+    });
 
     grid.querySelectorAll('.add-slot').forEach(el => {
         el.addEventListener('click', e => {
@@ -1827,17 +1887,6 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
         });
     }
 
-    // Helper: count total days assigned this month for a terceiro (for load balancing)
-    function getTerceiroMonthDays(tercId, dates) {
-        const assigned = new Set();
-        dates.forEach(d => {
-            SHIFTS.forEach(s => {
-                if (getAssignedForShift(d, s).includes(tercId)) assigned.add(dateKey(d));
-            });
-        });
-        return assigned.size;
-    }
-
     // Helper: check if doctor already works the other weekend day
     function workedOtherWeekendDay(docId, date) {
         const dow = date.getDay(); // 0=Sun, 6=Sat
@@ -1853,30 +1902,11 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
     }
 
     // =========================================
-    // PASS 2.7: Terceiros (after fixed, before extra-hours doctors)
+    // PASS 2.7: Terceiros — REMOVED ON PURPOSE.
+    // A tarefeiro's availability is a *request*; only an admin accepting it puts
+    // them on the schedule (see the "Pedidos de tarefeiros" panel and the pending
+    // markers in the monthly schedule). Auto-fill must never bypass that approval.
     // =========================================
-    dates.forEach(date => {
-        const dk = dateKey(date);
-        SHIFTS.forEach(shift => {
-            const { arr } = getSk(date, shift);
-            while (arr.length < DOCTORS_PER_SHIFT) {
-                const candidates = terceiros
-                    .filter(t => !arr.includes(t.id))
-                    .filter(t => {
-                        const avail = t.monthlyAvailability || {};
-                        return avail[dk] && avail[dk][shift];
-                    })
-                    .filter(t => !needsRestAfterNight(t.id, date, shift))
-                    .filter(t => shift !== 'night' || !hasNextDayConflict(t.id, date))
-                    .filter(t => !workedOtherWeekendDay(t.id, date))
-                    .map(t => ({ t, days: getTerceiroMonthDays(t.id, dates) }))
-                    .sort((a, b) => a.days - b.days);
-
-                if (candidates.length === 0) break;
-                arr.push(candidates[0].t.id);
-            }
-        });
-    });
 
     // =========================================
     // PASS 3a-weekend (prioritised): give each 24h-capable doctor ONE full
@@ -2063,18 +2093,93 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
 });
 
 // ---- Clear week ----
+// ---- Undo toast ----
+// Safety net for destructive actions: a banner with a countdown that can put
+// everything back. Only one is ever on screen.
+let _undoTimer = null;
+
+function showUndoToast(message, onUndo, seconds = 5) {
+    document.querySelectorAll('.undo-host').forEach(t => t.remove());
+    if (_undoTimer) { clearInterval(_undoTimer); _undoTimer = null; }
+
+    const host = document.createElement('div');
+    host.className = 'undo-host';
+    const el = document.createElement('div');
+    el.className = 'undo-toast';
+    el.innerHTML = `
+        <span class="undo-icon">🗑️</span>
+        <span class="undo-msg">${message}</span>
+        <button class="undo-btn" type="button">↩ Desfazer</button>
+        <span class="undo-count">${seconds}</span>
+        <div class="undo-bar"><div class="undo-bar-fill"></div></div>`;
+    host.appendChild(el);
+    document.body.appendChild(host);
+
+    // Sit just below the sticky header, whose height differs between phone and desktop.
+    const headerH = document.querySelector('header')?.getBoundingClientRect().height || 0;
+    host.style.top = `${Math.round(headerH) + 14}px`;
+
+    const fill = el.querySelector('.undo-bar-fill');
+    const countEl = el.querySelector('.undo-count');
+    // setTimeout, not requestAnimationFrame: rAF is throttled when the page isn't
+    // painting (background tab), which would leave the toast stuck off-screen.
+    setTimeout(() => {
+        el.classList.add('in');
+        fill.style.transition = `width ${seconds}s linear`;
+        fill.style.width = '0%';
+    }, 20);
+
+    function dismiss() {
+        if (_undoTimer) { clearInterval(_undoTimer); _undoTimer = null; }
+        el.classList.remove('in');
+        setTimeout(() => host.remove(), 320);
+    }
+
+    let left = seconds;
+    _undoTimer = setInterval(() => {
+        left--;
+        countEl.textContent = Math.max(left, 0);
+        if (left <= 0) dismiss();
+    }, 1000);
+
+    el.querySelector('.undo-btn').addEventListener('click', () => {
+        dismiss();
+        onUndo();
+    });
+}
+
 document.getElementById('clear-week-btn').addEventListener('click', () => {
     if (!confirm(`Tem a certeza que deseja limpar toda a escala de ${MONTH_NAMES[currentSchedMonth]} ${currentSchedYear}?`)) return;
-    const dates = getMonthDates();
-    dates.forEach(date => {
+
+    // Snapshot every shift before wiping, so the whole month can be restored.
+    const clearedMonth = currentSchedMonth, clearedYear = currentSchedYear;
+    const backup = [];
+    getMonthDates().forEach(date => {
         const sched = getScheduleForDate(date);
         SHIFTS.forEach(shift => {
             const sk = shiftKey(date, shift);
+            if (sched[sk] && sched[sk].length) backup.push({ date: new Date(date), shift, ids: [...sched[sk]] });
             delete sched[sk];
         });
     });
     save();
     renderSchedule();
+    renderHoursSummary();
+
+    const label = `${MONTH_NAMES[clearedMonth]} ${clearedYear}`;
+    showUndoToast(
+        `Escala de <strong>${label}</strong> limpa — ${backup.length} ${backup.length === 1 ? 'turno' : 'turnos'} removidos.`,
+        () => {
+            backup.forEach(b => setAssignedForShift(b.date, b.shift, b.ids));
+            save();
+            // Jump back to the restored month so the result is visible
+            currentSchedMonth = clearedMonth; currentSchedYear = clearedYear;
+            renderSchedule();
+            renderHoursSummary();
+            renderTerceiros();
+            showSaveStatus(`Escala de ${label} restaurada`);
+        }
+    );
 });
 
 // ---- Week navigation ----
@@ -2109,7 +2214,8 @@ document.getElementById('export-rules-btn').addEventListener('click', () => {
     L('2. Rotações            — pares A/B alternam semana a semana; sujeito a regras de descanso.');
     L('3. Regras mensais      — "X turnos de Y tipo às Z-feiras"; preenche até atingir o número.');
     L('4. Reposição           — indisponibilidade (não-férias) em dia fixo gera débito a repor no mês.');
-    L('5. Tarefeiros          — só dias com disponibilidade marcada; nunca sáb+dom na mesma semana.');
+    L('5. Tarefeiros          — NÃO entram no auto-preenchimento. Propõem-se aos turnos com falta');
+    L('                         de pessoal e só entram na escala quando o admin aceita o pedido.');
     L('6. Turnos 24h          — só médicos com flag "Pode 24h"; só se ambos os slots (D+N) estiverem vazios.');
     L('   Fim-de-semana       — preferência reforçada por 24h ao Sáb/Dom (médicos preferem 24h a 12+12).');
     L('7. Flex (extra)        — preenche restantes: 1º um por slot vazio, 2º completa o 2º, 3º redistribui.');
@@ -2849,6 +2955,330 @@ document.getElementById('assign-close').addEventListener('click', () => {
 });
 
 // ---- Terceiros Rendering ----
+// ---- Tarefeiro: escolha de vagas (furos) ----
+
+// A month counts as "scheduled" once it has at least one assignment. A completely
+// empty month just means the escala hasn't been made yet, so its empty shifts are
+// NOT offered as vagas (otherwise a whole unscheduled month looks like 62 openings).
+function monthHasSchedule(year, month) {
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    for (let d = 1; d <= daysInMonth; d++) {
+        const dt = new Date(year, month, d);
+        for (const s of SHIFTS) {
+            if (getAssignedForShift(dt, s).length > 0) return true;
+        }
+    }
+    return false;
+}
+
+// Every shift this tarefeiro may volunteer for: today onwards, in months whose
+// schedule has been started, that still have a free slot — plus any shift they
+// already marked, so it stays visible (and removable) even once it fills up.
+function getTarefeiroVagas(terc, monthsAhead = 6) {
+    const avail = terc.monthlyAvailability || {};
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const out = [];
+    for (let i = 0; i < monthsAhead; i++) {
+        const cur = new Date(today.getFullYear(), today.getMonth() + i, 1);
+        const yy = cur.getFullYear(), mm = cur.getMonth();
+        const scheduled = monthHasSchedule(yy, mm);
+        const daysInMonth = new Date(yy, mm + 1, 0).getDate();
+        for (let d = 1; d <= daysInMonth; d++) {
+            const dt = new Date(yy, mm, d);
+            if (dt < today) continue;
+            const dk = dateKey(dt);
+            SHIFTS.forEach(shift => {
+                const marked = !!(avail[dk] && avail[dk][shift]);
+                const assignedArr = getAssignedForShift(dt, shift);
+                const free = DOCTORS_PER_SHIFT - assignedArr.length;
+                // Offer real gaps in started months; always keep own marks visible.
+                if (!marked && !(scheduled && free > 0)) return;
+                out.push({
+                    date: dt, dk, shift, free, marked,
+                    assigned: assignedArr.includes(terc.id),
+                });
+            });
+        }
+    }
+    return out;
+}
+
+// What this tarefeiro's relationship to one shift is.
+//   confirmed = admin put them on the schedule · pending = offered, awaiting decision
+//   lost = they offered but it filled up · open = free slot they can offer for
+//   full = no room and they never offered
+function tarefeiroShiftState(terc, date, shift) {
+    const dk = dateKey(date);
+    const avail = terc.monthlyAvailability || {};
+    const marked = !!(avail[dk] && avail[dk][shift]);
+    const assigned = getAssignedForShift(date, shift);
+    const free = DOCTORS_PER_SHIFT - assigned.length;
+    if (assigned.includes(terc.id)) return { state: 'confirmed', free, marked };
+    if (marked && free <= 0)        return { state: 'lost', free, marked };
+    if (marked)                     return { state: 'pending', free, marked };
+    if (free > 0)                   return { state: 'open', free, marked };
+    return { state: 'full', free, marked };
+}
+
+// Which tab the tarefeiro is looking at: open shifts, or their own.
+let tercViewFilter = 'open';
+window.setTercFilter = function(f) {
+    tercViewFilter = f;
+    renderTerceiros();
+};
+
+// One card per DAY holding both shifts — half the scrolling of a flat list,
+// and the whole day is readable at a glance.
+function renderTarefeiroVagas(terc) {
+    const vagas = getTarefeiroVagas(terc);
+
+    // Collapse the flat vaga list into unique days, then resolve both shifts per day.
+    const dayMap = new Map();
+    vagas.forEach(v => {
+        const k = dateKey(v.date);
+        if (!dayMap.has(k)) dayMap.set(k, v.date);
+    });
+    const days = [...dayMap.values()].sort((a, b) => a - b).map(date => ({
+        date,
+        shifts: SHIFTS.map(shift => ({ shift, ...tarefeiroShiftState(terc, date, shift) })),
+    }));
+
+    // Counters for the summary chips
+    let nConfirmed = 0, nPending = 0, nOpen = 0;
+    days.forEach(d => d.shifts.forEach(s => {
+        if (s.state === 'confirmed') nConfirmed++;
+        else if (s.state === 'pending') nPending++;
+        else if (s.state === 'open') nOpen++;
+    }));
+    const nMine = nConfirmed + nPending;
+
+    const firstName = (terc.name || '').split(' ')[0];
+    const greeting = /a$/i.test(firstName) ? 'Bem-vinda' : 'Bem-vindo';
+
+    let html = `<div class="tf-wrap">
+        <div class="tf-hero">
+            <div class="tf-hello">${greeting}, <strong>${firstName}</strong> 👋</div>
+            <div class="tf-stats">
+                <div class="tf-stat ${nConfirmed ? 'lit' : ''}"><span class="tf-n">${nConfirmed}</span><span class="tf-l">Escalado</span></div>
+                <div class="tf-stat ${nPending ? 'lit' : ''}"><span class="tf-n">${nPending}</span><span class="tf-l">À espera</span></div>
+                <div class="tf-stat ${nOpen ? 'lit' : ''}"><span class="tf-n">${nOpen}</span><span class="tf-l">Por preencher</span></div>
+            </div>
+        </div>`;
+
+    if (days.length === 0) {
+        html += `<div class="tf-empty">
+            <div class="tf-empty-icon">🎉</div>
+            <h4>Está tudo preenchido</h4>
+            <p>Não há turnos a precisar de gente neste momento.<br>Quando houver, aparecem aqui — não precisa de fazer nada.</p>
+        </div></div>`;
+        return html;
+    }
+
+    html += `<div class="tf-tabs">
+        <button class="tf-tab ${tercViewFilter === 'open' ? 'active' : ''}" onclick="setTercFilter('open')">
+            Por preencher${nOpen ? ` <span class="tf-tab-n">${nOpen}</span>` : ''}
+        </button>
+        <button class="tf-tab ${tercViewFilter === 'mine' ? 'active' : ''}" onclick="setTercFilter('mine')">
+            Os meus turnos${nMine ? ` <span class="tf-tab-n">${nMine}</span>` : ''}
+        </button>
+    </div>`;
+
+    // Keep 'pending' visible in the open tab too, so a day doesn't vanish the moment
+    // you pick it — you get instant confirmation and can still undo.
+    const wanted = tercViewFilter === 'mine'
+        ? d => d.shifts.some(s => ['confirmed', 'pending', 'lost'].includes(s.state))
+        : d => d.shifts.some(s => s.state === 'open' || s.state === 'pending');
+    const shown = days.filter(wanted);
+
+    if (shown.length === 0) {
+        html += `<div class="tf-empty small">
+            <div class="tf-empty-icon">${tercViewFilter === 'mine' ? '🗓️' : '✅'}</div>
+            <p>${tercViewFilter === 'mine'
+                ? 'Ainda não escolheu nenhum turno.<br>Veja os turnos <strong>por preencher</strong>.'
+                : 'Não há turnos por preencher.'}</p>
+        </div>`;
+    } else {
+        html += `<p class="tf-help">${tercViewFilter === 'mine'
+            ? 'Verde = confirmado pelo hospital. Amarelo = ainda à espera de resposta.'
+            : 'Toque num turno para se propor. O hospital confirma depois quem fica com ele.'}</p>`;
+
+        let lastMonth = null;
+        shown.forEach(d => {
+            const mk = `${d.date.getFullYear()}-${d.date.getMonth()}`;
+            if (mk !== lastMonth) {
+                lastMonth = mk;
+                html += `<div class="tf-month">${MONTH_NAMES[d.date.getMonth()]} ${d.date.getFullYear()}</div>`;
+            }
+            const dow = (d.date.getDay() + 6) % 7;
+            html += `<div class="tf-day ${dow >= 5 ? 'weekend' : ''}">
+                <div class="tf-date">
+                    <span class="tf-dow">${DAYS[dow]}</span>
+                    <span class="tf-dnum">${d.date.getDate()}</span>
+                </div>
+                <div class="tf-chips">`;
+
+            d.shifts.forEach(s => {
+                const isNight = s.shift === 'night';
+                const icon = isNight ? '🌙' : '☀️';
+                const name = isNight ? 'Noite' : 'Dia';
+                const sub = {
+                    confirmed: 'Vai trabalhar',
+                    pending: 'À espera',
+                    lost: 'Foi para outro',
+                    open: s.free === 1 ? '1 vaga' : `${s.free} vagas`,
+                    full: 'Completo',
+                }[s.state];
+                const clickable = s.state !== 'confirmed' && s.state !== 'full';
+                html += `<button class="tf-chip ${s.state}" ${clickable ? '' : 'disabled'}
+                    ${clickable ? `onclick="toggleVaga('${dateKey(d.date)}','${s.shift}')"` : ''}
+                    title="${SHIFT_LABELS[s.shift]} ${SHIFT_TIMES[s.shift]}">
+                    <span class="tf-chip-name">${icon} ${name}</span>
+                    <span class="tf-chip-sub">${sub}</span>
+                    ${s.state === 'confirmed' ? '<span class="tf-chip-lock">🔒</span>' : ''}
+                    ${s.state === 'pending' ? '<span class="tf-chip-lock">✓</span>' : ''}
+                </button>`;
+            });
+
+            html += `</div></div>`;
+        });
+    }
+
+    html += `</div>`;
+    return html;
+}
+
+// Toggle one vaga for the logged-in tarefeiro and save immediately.
+window.toggleVaga = function(dk, shift) {
+    const t = terceiros.find(x => x.id === currentTerceiroId);
+    if (!t) return;
+    if (!t.monthlyAvailability) t.monthlyAvailability = {};
+    const avail = t.monthlyAvailability;
+    if (avail[dk] && avail[dk][shift]) {
+        delete avail[dk][shift];
+        if (!avail[dk].day && !avail[dk].night) delete avail[dk];
+    } else {
+        if (!avail[dk]) avail[dk] = {};
+        avail[dk][shift] = true;
+    }
+    save();
+    renderTerceiros();
+};
+
+// ---- Admin: pedidos de tarefeiros ----
+
+// A tarefeiro's availability mark is a *request* until an admin accepts it.
+// Pending = marked, not yet on the schedule, and the shift still has room.
+function getPendingTerceiroRequests(monthsAhead = 6) {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const limit = new Date(today.getFullYear(), today.getMonth() + monthsAhead, 1);
+    const out = [];
+    terceiros.forEach(t => {
+        const avail = t.monthlyAvailability || {};
+        Object.keys(avail).forEach(dk => {
+            const dt = new Date(dk + 'T00:00:00');
+            if (isNaN(dt.getTime()) || dt < today || dt >= limit) return;
+            SHIFTS.forEach(shift => {
+                if (!avail[dk][shift]) return;
+                const assigned = getAssignedForShift(dt, shift);
+                if (assigned.includes(t.id)) return;            // already accepted
+                const free = DOCTORS_PER_SHIFT - assigned.length;
+                if (free <= 0) return;                          // shift is full
+                out.push({ terc: t, date: dt, dk, shift, free });
+            });
+        });
+    });
+    out.sort((a, b) => a.date - b.date || (a.shift === 'day' ? -1 : 1));
+    return out;
+}
+
+// Is there a pending request for this exact shift? (used by the schedule markers)
+function pendingRequestsForShift(date, shift) {
+    const dk = dateKey(date);
+    const assigned = getAssignedForShift(date, shift);
+    if (DOCTORS_PER_SHIFT - assigned.length <= 0) return [];
+    return terceiros.filter(t => {
+        const a = t.monthlyAvailability || {};
+        return a[dk] && a[dk][shift] && !assigned.includes(t.id);
+    });
+}
+
+function renderPendingRequestsPanel() {
+    const reqs = getPendingTerceiroRequests();
+    if (reqs.length === 0) return '';
+
+    let html = `<div class="req-panel">
+        <div class="req-head">
+            <h3>Pedidos de tarefeiros</h3>
+            <span class="req-count">${reqs.length === 1 ? '1 pendente' : `${reqs.length} pendentes`}</span>
+        </div>
+        <p class="req-help">Estes tarefeiros ofereceram-se para turnos com falta de pessoal. Só entram na escala se aceitar.</p>`;
+
+    reqs.forEach(r => {
+        const dow = (r.date.getDay() + 6) % 7;
+        const isNight = r.shift === 'night';
+        html += `<div class="req-row">
+            <div class="req-who">
+                <span class="req-name">${r.terc.name}</span>
+                <span class="req-when">${DAYS[dow]} ${r.date.getDate()} ${MONTH_NAMES[r.date.getMonth()].slice(0,3)} ·
+                    <span class="${isNight ? 'req-night' : 'req-day'}">${isNight ? '🌙' : '☀️'} ${SHIFT_LABELS[r.shift]}</span>
+                    · ${r.free === 1 ? '1 vaga' : `${r.free} vagas`}</span>
+            </div>
+            <div class="req-actions">
+                <button class="btn btn-sm req-accept" onclick="acceptTerceiroRequest('${r.terc.id}','${r.dk}','${r.shift}')">✓ Aceitar</button>
+                <button class="btn btn-sm req-decline" onclick="declineTerceiroRequest('${r.terc.id}','${r.dk}','${r.shift}')">✕ Recusar</button>
+            </div>
+        </div>`;
+    });
+
+    html += `</div>`;
+    return html;
+}
+
+// Accept: put the tarefeiro on the schedule for that shift.
+window.acceptTerceiroRequest = function(tercId, dk, shift) {
+    const t = terceiros.find(x => x.id === tercId);
+    if (!t) return;
+    const date = new Date(dk + 'T00:00:00');
+    const assigned = getAssignedForShift(date, shift);
+    if (assigned.includes(tercId)) return;
+    if (assigned.length >= DOCTORS_PER_SHIFT) {
+        alert('Este turno já está completo.');
+        renderTerceiros();
+        return;
+    }
+    setAssignedForShift(date, shift, [...assigned, tercId]);
+    save();
+    renderTerceiros();
+    renderSchedule();
+    updatePendingBadge();
+};
+
+// Decline: drop the request, so the shift goes back to being offered.
+window.declineTerceiroRequest = function(tercId, dk, shift) {
+    const t = terceiros.find(x => x.id === tercId);
+    if (!t || !t.monthlyAvailability || !t.monthlyAvailability[dk]) return;
+    delete t.monthlyAvailability[dk][shift];
+    if (!t.monthlyAvailability[dk].day && !t.monthlyAvailability[dk].night) delete t.monthlyAvailability[dk];
+    save();
+    renderTerceiros();
+    renderSchedule();
+    updatePendingBadge();
+};
+
+// Little counter on the Tarefeiros tab so pending requests get noticed.
+function updatePendingBadge() {
+    const btn = document.querySelector('.nav-btn[data-view="terceiros"]');
+    if (!btn) return;
+    btn.querySelectorAll('.nav-badge').forEach(b => b.remove());
+    if (currentRole !== 'admin') return;
+    const n = getPendingTerceiroRequests().length;
+    if (n === 0) return;
+    const badge = document.createElement('span');
+    badge.className = 'nav-badge';
+    badge.textContent = n;
+    btn.appendChild(badge);
+}
+
 function renderTerceiros() {
     const list = document.getElementById('terceiros-list');
     const isTarefeiro = currentRole === 'tarefeiro';
@@ -2876,10 +3306,16 @@ function renderTerceiros() {
     const curYear = now.getFullYear();
     const daysInMonth = new Date(curYear, curMonth + 1, 0).getDate();
 
-    let html = '';
+    // Admins see the pending-request queue above the cards.
+    let html = isTarefeiro ? '' : renderPendingRequestsPanel();
     cards.forEach(t => {
-        const firstName = (t.name || '').split(' ')[0];
-        const greeting = /a$/i.test(firstName) ? 'Bem-vinda' : 'Bem-vindo'; // feminine if name ends in "a"
+        // A tarefeiro gets the purpose-built panel only — their own name, phone and
+        // specialty are noise to them, and the greeting lives in its header.
+        if (isTarefeiro) {
+            html += renderTarefeiroVagas(t);
+            return;
+        }
+
         let availCount = 0;
         for (let d = 1; d <= daysInMonth; d++) {
             const dt = new Date(curYear, curMonth, d);
@@ -2900,19 +3336,15 @@ function renderTerceiros() {
                 ${t.email ? `<span>✉ ${t.email}</span>` : ''}
             </div>
             <div class="avail-summary">Disponível em ${availCount} dias — ${MONTH_NAMES[curMonth]} ${curYear}</div>
-            ${isTarefeiro ? `
-            <div class="tarefeiro-hint">${greeting}, <strong>${firstName}</strong> 👋</div>
-            <div class="card-actions">
-                <button class="btn btn-sm btn-primary" onclick="openMyAvailability()">📅 Marcar disponibilidade</button>
-            </div>` : `
             <div class="card-actions write-only">
                 <button class="btn btn-sm" onclick="editTerceiro('${t.id}')">Editar</button>
                 <button class="btn btn-sm btn-danger" onclick="deleteTerceiro('${t.id}')">Eliminar</button>
-            </div>`}
+            </div>
         </div>`;
     });
 
     list.innerHTML = html;
+    updatePendingBadge();
 }
 
 // ---- Terceiro Modal ----
