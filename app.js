@@ -20,6 +20,10 @@ const db = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const LOCAL_CACHE_KEY = 'chbv_local_cache';
 
+// A pending local snapshot older than this is thrown away rather than replayed:
+// pushing a days-old copy of everything over live data loses more than it saves.
+const LOCAL_CACHE_MAX_AGE_MS = 8 * 60 * 60 * 1000; // 8h
+
 function writeLocalCache(pending) {
     try {
         localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify({
@@ -36,28 +40,181 @@ function readLocalCache() {
     } catch { return null; }
 }
 
+function clearLocalCache() {
+    try { localStorage.removeItem(LOCAL_CACHE_KEY); } catch {}
+}
+
+// ---- Concurrency ----
+// Several people (admin + tarefeiros on phones) use this at once, and every client
+// holds the whole dataset in memory. To avoid one client's stale copy overwriting
+// everyone else's work we keep the exact value we last read from the server as a
+// merge BASE, then on save only push the keys we actually changed, three-way merged
+// against whatever is on the server right now.
+const DATA_KEYS = {
+    chbv_doctors:   { get: () => doctors,      set: v => { doctors = v; } },
+    chbv_schedules: { get: () => schedules,    set: v => { schedules = v; } },
+    chbv_rotations: { get: () => rotationGrid, set: v => { rotationGrid = migrateRotationsToGrid(v); } },
+    chbv_terceiros: { get: () => terceiros,    set: v => { terceiros = v; } },
+};
+let _base = {};   // key -> JSON string of the server value this client started from
+
+function snapshotBase() {
+    Object.keys(DATA_KEYS).forEach(k => { _base[k] = JSON.stringify(DATA_KEYS[k].get() ?? null); });
+}
+
+function localChanged(key) {
+    return JSON.stringify(DATA_KEYS[key].get() ?? null) !== _base[key];
+}
+
+// Merge helper: for a map of independent entries, an entry I changed wins, otherwise
+// the server's entry wins. Entries only I added are kept; entries only I deleted stay deleted.
+function mergeById(baseArr, mineArr, theirsArr, idOf) {
+    const base = new Map((baseArr || []).map(x => [idOf(x), JSON.stringify(x)]));
+    const mine = new Map((mineArr || []).map(x => [idOf(x), x]));
+    const theirs = new Map((theirsArr || []).map(x => [idOf(x), x]));
+    const out = [];
+    const seen = new Set();
+    // Keep server order first, so other people's additions survive
+    (theirsArr || []).forEach(t => {
+        const id = idOf(t);
+        seen.add(id);
+        if (!mine.has(id)) {
+            // I deleted it only if I had it to begin with
+            if (base.has(id)) return;
+            out.push(t);
+            return;
+        }
+        const iChangedIt = JSON.stringify(mine.get(id)) !== base.get(id);
+        out.push(iChangedIt ? mine.get(id) : t);
+    });
+    // Entries I have that the server doesn't: genuinely new locally → keep.
+    // But if the BASE had it, someone else deleted it — don't resurrect a deleted card.
+    (mineArr || []).forEach(m => {
+        const id = idOf(m);
+        if (!seen.has(id) && !base.has(id)) out.push(m);
+    });
+    return out;
+}
+
+// Schedules: { weekKey: { shiftKey: [ids] } }. Merge shift by shift.
+function mergeSchedules(base, mine, theirs) {
+    base = base || {}; mine = mine || {}; theirs = theirs || {};
+    const out = JSON.parse(JSON.stringify(theirs));
+    Object.keys(mine).forEach(wk => {
+        Object.keys(mine[wk] || {}).forEach(sk => {
+            const mineVal = JSON.stringify(mine[wk][sk]);
+            const baseVal = JSON.stringify((base[wk] || {})[sk] ?? null);
+            if (mineVal !== baseVal) {                     // I touched this shift → mine wins
+                if (!out[wk]) out[wk] = {};
+                out[wk][sk] = mine[wk][sk];
+            }
+        });
+    });
+    // Shifts I deleted (had a base value, gone locally) stay deleted
+    Object.keys(base).forEach(wk => {
+        Object.keys(base[wk] || {}).forEach(sk => {
+            const goneLocally = !(mine[wk] || {})[sk];
+            const unchangedByThem = JSON.stringify((theirs[wk] || {})[sk] ?? null) === JSON.stringify(base[wk][sk]);
+            if (goneLocally && unchangedByThem && out[wk]) delete out[wk][sk];
+        });
+    });
+    return out;
+}
+
+// Rotation grid: merge cell by cell, keeping cycle settings from whoever changed them.
+function mergeRotationGrid(base, mine, theirs) {
+    base = base || {}; mine = mine || {}; theirs = theirs || {};
+    const out = JSON.parse(JSON.stringify(theirs));
+    if (JSON.stringify(mine.cycleLength) !== JSON.stringify(base.cycleLength)) out.cycleLength = mine.cycleLength;
+    if (JSON.stringify(mine.anchorWeek) !== JSON.stringify(base.anchorWeek)) out.anchorWeek = mine.anchorWeek;
+    out.cells = out.cells || {};
+    Object.keys(mine.cells || {}).forEach(k => {
+        const mineVal = JSON.stringify(mine.cells[k]);
+        const baseVal = JSON.stringify((base.cells || {})[k] ?? null);
+        if (mineVal !== baseVal) out.cells[k] = mine.cells[k];
+    });
+    return out;
+}
+
+function mergeKey(key, theirsRaw) {
+    const base = _base[key] ? JSON.parse(_base[key]) : null;
+    const mine = DATA_KEYS[key].get();
+    const theirs = theirsRaw ?? null;
+    if (theirs === null) return mine;                       // nothing on the server yet
+    switch (key) {
+        case 'chbv_doctors':
+        case 'chbv_terceiros':
+            return mergeById(base, mine, theirs, x => x && x.id);
+        case 'chbv_schedules':
+            return mergeSchedules(base, mine, theirs);
+        case 'chbv_rotations':
+            return mergeRotationGrid(migrateRotationsToGrid(base), mine, migrateRotationsToGrid(theirs));
+        default:
+            return mine;
+    }
+}
+
 async function loadData() {
     const { data, error } = await db.from('app_data').select('*');
     if (error) { console.error('Erro ao carregar dados:', error); }
     if (data) {
         data.forEach(row => {
-            if (row.key === 'chbv_doctors') doctors = row.value;
-            if (row.key === 'chbv_schedules') schedules = row.value;
+            // Guard against a null/!malformed row: it used to abort sign-in entirely
+            if (row.value === null || row.value === undefined) return;
+            if (row.key === 'chbv_doctors' && Array.isArray(row.value)) doctors = row.value;
+            if (row.key === 'chbv_schedules' && typeof row.value === 'object') schedules = row.value;
             if (row.key === 'chbv_rotations') rotationGrid = migrateRotationsToGrid(row.value);
-            if (row.key === 'chbv_terceiros') terceiros = row.value;
+            if (row.key === 'chbv_terceiros' && Array.isArray(row.value)) terceiros = row.value;
         });
     }
-    // Restore pending local edits that never made it to the server
+    if (!Array.isArray(doctors)) doctors = [];
+    if (!Array.isArray(terceiros)) terceiros = [];
+    if (!schedules || typeof schedules !== 'object') schedules = {};
+
+    // Restore pending local edits that never reached the server — but only if recent.
     const cache = readLocalCache();
     if (cache && cache.pending) {
-        const ageMin = Math.round((Date.now() - cache.timestamp) / 60000);
-        console.warn(`A restaurar alterações locais pendentes (${ageMin} min)`);
-        if (cache.doctors)   doctors   = cache.doctors;
-        if (cache.schedules) schedules = cache.schedules;
-        if (cache.rotations) rotationGrid = migrateRotationsToGrid(cache.rotations);
-        if (cache.terceiros) terceiros = cache.terceiros;
-        setTimeout(() => save(), 500); // push them up
+        const age = Date.now() - (cache.timestamp || 0);
+        if (age > LOCAL_CACHE_MAX_AGE_MS) {
+            console.warn(`Alterações locais pendentes demasiado antigas (${Math.round(age/3600000)}h) — descartadas.`);
+            clearLocalCache();
+            snapshotBase();
+        } else {
+            console.warn(`A restaurar alterações locais pendentes (${Math.round(age/60000)} min)`);
+            snapshotBase();                       // server state is the merge base…
+            if (cache.doctors)   doctors   = cache.doctors;
+            if (cache.schedules) schedules = cache.schedules;
+            if (cache.rotations) rotationGrid = migrateRotationsToGrid(cache.rotations);
+            if (cache.terceiros) terceiros = cache.terceiros;
+            setTimeout(() => save(), 500);        // …and the save merges instead of overwriting
+        }
+    } else {
+        snapshotBase();
     }
+}
+
+// Pull other people's changes in without losing local edits (merged, never blind-replaced).
+async function refreshFromServer() {
+    if (_saveInFlight || _saveTimer) return;              // a save is mid-flight; it will merge
+    const { data, error } = await db.from('app_data').select('*');
+    if (error || !data) return;
+    let changed = false;
+    data.forEach(row => {
+        if (!DATA_KEYS[row.key] || row.value === null || row.value === undefined) return;
+        const merged = mergeKey(row.key, row.value);
+        if (JSON.stringify(merged) !== JSON.stringify(DATA_KEYS[row.key].get())) changed = true;
+        DATA_KEYS[row.key].set(merged);
+    });
+    snapshotBase();
+    if (changed) renderAll();
+}
+
+// Re-render whatever the current user can see.
+function renderAll() {
+    try {
+        if (currentRole === 'tarefeiro') { renderTerceiros(); return; }
+        renderSchedule(); renderDoctors(); renderTerceiros(); renderRotations(); renderHoursSummary();
+    } catch (e) { console.warn('render falhou', e); }
 }
 
 // The rotation grid is a single 8-week (N-week) master schedule, like the Excel:
@@ -130,6 +287,7 @@ let modalFixedBlockedData = {}; // separate store for blocked shifts
 
 // Modal state for terceiro availability calendar
 let modalTercAvailData = {};
+let modalTercAvailBase = {};
 let modalTercAvailMonth = new Date().getMonth();
 let modalTercAvailYear = new Date().getFullYear();
 
@@ -263,19 +421,38 @@ async function performSave() {
         return;
     }
     _saveInFlight = true;
-    const entries = [
-        { key: 'chbv_doctors',   value: doctors },
-        { key: 'chbv_schedules', value: schedules },
-        { key: 'chbv_rotations', value: rotationGrid },
-        { key: 'chbv_terceiros', value: terceiros },
-    ];
+
+    // Only push what THIS client actually changed, three-way merged against the
+    // server's current value. A tarefeiro tapping one shift can no longer overwrite
+    // the admin's schedule, and two people editing different things both survive.
+    const dirtyKeys = Object.keys(DATA_KEYS).filter(localChanged);
+    if (dirtyKeys.length === 0) {
+        _saveInFlight = false;
+        writeLocalCache(false);
+        setSaveStatus('saved', '✓ Guardado');
+        return;
+    }
 
     let lastError = null;
     for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt++) {
-        const { error } = await db.from('app_data').upsert(entries);
-        if (!error) { lastError = null; break; }
-        lastError = error;
-        console.warn(`Save attempt ${attempt + 1} failed:`, error.message || error);
+        // Re-read just before writing so we merge onto the freshest state
+        const { data: current, error: readErr } = await db.from('app_data')
+            .select('key,value').in('key', dirtyKeys);
+        if (readErr) {
+            lastError = readErr;
+        } else {
+            const serverByKey = {};
+            (current || []).forEach(r => { serverByKey[r.key] = r.value; });
+            const entries = dirtyKeys.map(k => {
+                const merged = mergeKey(k, serverByKey[k]);
+                DATA_KEYS[k].set(merged);      // keep local state = what we're writing
+                return { key: k, value: merged };
+            });
+            const { error } = await db.from('app_data').upsert(entries);
+            if (!error) { lastError = null; snapshotBase(); break; }
+            lastError = error;
+        }
+        console.warn(`Save attempt ${attempt + 1} failed:`, lastError.message || lastError);
         if (attempt < RETRY_BACKOFF_MS.length) {
             await new Promise(r => setTimeout(r, RETRY_BACKOFF_MS[attempt]));
         }
@@ -452,6 +629,27 @@ function getMonthlyTotalHours(docId, year, month) {
     return hours;
 }
 
+// ---- Auto refresh ----
+// Clients used to read the server only once, at sign-in, so a phone left open all day
+// showed hours-old data. Pull (merged) updates periodically and when the tab regains focus.
+const AUTO_REFRESH_MS = 60 * 1000;
+let _refreshTimer = null;
+
+function startAutoRefresh() {
+    stopAutoRefresh();
+    _refreshTimer = setInterval(() => {
+        if (document.visibilityState === 'visible') refreshFromServer();
+    }, AUTO_REFRESH_MS);
+}
+
+function stopAutoRefresh() {
+    if (_refreshTimer) { clearInterval(_refreshTimer); _refreshTimer = null; }
+}
+
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && currentUser) refreshFromServer();
+});
+
 // ---- Auth ----
 
 async function initAuth() {
@@ -469,6 +667,12 @@ async function initAuth() {
         } else if (event === 'SIGNED_OUT') {
             currentUser = null;
             currentRole = null;
+            // Don't leave one user's state (or an undo banner) behind for the next
+            currentTerceiroId = null;
+            stopAutoRefresh();
+            document.querySelectorAll('.undo-host').forEach(h => h.remove());
+            if (_undoTimer) { clearInterval(_undoTimer); _undoTimer = null; }
+            clearLocalCache();
             showLoginScreen();
         }
     });
@@ -504,6 +708,7 @@ async function onSignIn(user) {
         const mine = terceiros.find(t => normEmail(t.email) === normEmail(user.email));
         currentTerceiroId = mine ? mine.id : null;
         enterTarefeiroMode();
+        startAutoRefresh();
         return;
     }
 
@@ -512,6 +717,7 @@ async function onSignIn(user) {
     renderTerceiros();
     renderRotations();
     renderHoursSummary();
+    startAutoRefresh();
 }
 
 // Lock the UI down to just the Tarefeiros tab for a 'tarefeiro' user.
@@ -577,6 +783,13 @@ function normEmail(e) {
     return (e || '').trim().toLowerCase();
 }
 
+// Escape text going into HTML/attributes. Names are admin-entered, but a stray quote
+// used to silently swallow the following attributes (including data-terc on the ✓ button).
+function esc(s) {
+    return String(s ?? '').replace(/[&<>"']/g, c =>
+        ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
 async function renderUsersAdmin() {
     const list = document.getElementById('users-list');
     list.innerHTML = '<div class="empty-state"><p>A carregar…</p></div>';
@@ -588,8 +801,12 @@ async function renderUsersAdmin() {
     }
 
     // Which tarefeiro cards have no account yet? (matched by email, like the login does)
-    const accountEmails = new Set(profiles.map(p => normEmail(p.email)));
-    const cardsWithoutAccount = terceiros.filter(t => !accountEmails.has(normEmail(t.email)));
+    // Blank emails must never match each other, or a card with no email would look linked.
+    const accountEmails = new Set(profiles.map(p => normEmail(p.email)).filter(Boolean));
+    const cardsWithoutAccount = (terceiros || []).filter(t => {
+        const e = normEmail(t.email);
+        return !e || !accountEmails.has(e);
+    });
 
     let html = '';
     if (cardsWithoutAccount.length) {
@@ -615,9 +832,10 @@ async function renderUsersAdmin() {
         // check the app does at login, so what you see here is what they'll get.
         let linkCell = '<span class="link-na">—</span>';
         if (p.role === 'tarefeiro') {
-            const card = terceiros.find(t => normEmail(t.email) === normEmail(p.email));
+            const pe = normEmail(p.email);
+            const card = pe ? terceiros.find(t => normEmail(t.email) === pe) : null;
             linkCell = card
-                ? `<span class="link-ok">✓ ${card.name}</span>`
+                ? `<span class="link-ok">✓ ${esc(card.name)}</span>`
                 : `<span class="link-bad">✗ sem cartão</span>`;
         }
 
@@ -829,10 +1047,10 @@ function renderScheduleCalendar() {
             if (currentRole === 'admin') {
                 pendingRequestsForShift(d, shift).forEach(t => {
                     html += `<div class="doctor-tag pending-tag"
-                        data-fullname="${t.name}" data-shift-type="Pedido de tarefeiro">
-                        <span>${t.name.split(' ')[0]}</span>
-                        <button class="accept-req" data-terc="${t.id}" data-date="${dk}" data-shift="${shift}" title="ACEITAR: escalar ${t.name} neste turno">✓</button>
-                        <button class="decline-req" data-terc="${t.id}" data-date="${dk}" data-shift="${shift}" title="RECUSAR o pedido de ${t.name}">✕</button>
+                        data-fullname="${esc(t.name)}" data-shift-type="Pedido de tarefeiro">
+                        <span>${esc(t.name.split(' ')[0])}</span>
+                        <button class="accept-req" data-terc="${t.id}" data-date="${dk}" data-shift="${shift}" title="ACEITAR: escalar ${esc(t.name)} neste turno">✓</button>
+                        <button class="decline-req" data-terc="${t.id}" data-date="${dk}" data-shift="${shift}" title="RECUSAR o pedido de ${esc(t.name)}">✕</button>
                     </div>`;
                 });
             }
@@ -1002,10 +1220,10 @@ function renderScheduleList() {
             if (currentRole === 'admin') {
                 pendingRequestsForShift(d, shift).forEach(t => {
                     html += `<div class="doctor-tag pending-tag"
-                        data-fullname="${t.name}" data-shift-type="Pedido de tarefeiro">
+                        data-fullname="${esc(t.name)}" data-shift-type="Pedido de tarefeiro">
                         <span>${t.name}</span>
-                        <button class="accept-req" data-terc="${t.id}" data-date="${dk}" data-shift="${shift}" title="ACEITAR: escalar ${t.name} neste turno">✓</button>
-                        <button class="decline-req" data-terc="${t.id}" data-date="${dk}" data-shift="${shift}" title="RECUSAR o pedido de ${t.name}">✕</button>
+                        <button class="accept-req" data-terc="${t.id}" data-date="${dk}" data-shift="${shift}" title="ACEITAR: escalar ${esc(t.name)} neste turno">✓</button>
+                        <button class="decline-req" data-terc="${t.id}" data-date="${dk}" data-shift="${shift}" title="RECUSAR o pedido de ${esc(t.name)}">✕</button>
                     </div>`;
                 });
             }
@@ -1428,12 +1646,12 @@ function openAssignModal(dk, shift) {
             const resting = needsRestAfterNight(t.id, date, shift);
             const canAssign = isAvail && !resting;
             const badges = [];
-            if (isAvail) badges.push('<span class="avail-badge yes">Disponível</span>');
-            if (isAvail) badges.push('<span class="avail-badge yes">Disponível</span>');
+            if (isAvail) badges.push('<span class="avail-badge yes">Propôs-se</span>');
             else badges.push('<span class="avail-badge no">Sem disponibilidade</span>');
             if (resting) badges.push('<span class="avail-badge no">A descansar (noite anterior)</span>');
             html += `<li class="assign-item ${!canAssign ? 'unavailable' : ''}"
                          data-doc-id="${t.id}" data-available="true">
+                <span>${esc(t.name)}</span>
                 <span>${badges.join(' ')}</span>
             </li>`;
         });
@@ -2162,20 +2380,25 @@ function showUndoToast(message, onUndo, seconds = 5) {
         fill.style.width = '0%';
     }, 20);
 
+    let done = false;                       // guards double-click and expiry-after-undo
     function dismiss() {
         if (_undoTimer) { clearInterval(_undoTimer); _undoTimer = null; }
         el.classList.remove('in');
         setTimeout(() => host.remove(), 320);
     }
 
-    let left = seconds;
+    // Wall-clock deadline, not a tick count: background tabs throttle timers, which
+    // used to leave the button live long after the window should have closed.
+    const deadline = Date.now() + seconds * 1000;
     _undoTimer = setInterval(() => {
-        left--;
+        const left = Math.ceil((deadline - Date.now()) / 1000);
         countEl.textContent = Math.max(left, 0);
-        if (left <= 0) dismiss();
-    }, 1000);
+        if (left <= 0) { done = true; dismiss(); }
+    }, 250);
 
     el.querySelector('.undo-btn').addEventListener('click', () => {
+        if (done || Date.now() > deadline) { dismiss(); return; }
+        done = true;
         dismiss();
         onUndo();
     });
@@ -2203,7 +2426,17 @@ document.getElementById('clear-week-btn').addEventListener('click', () => {
     showUndoToast(
         `Escala de <strong>${label}</strong> limpa — ${backup.length} ${backup.length === 1 ? 'turno' : 'turnos'} removidos.`,
         () => {
-            backup.forEach(b => setAssignedForShift(b.date, b.shift, b.ids));
+            // Only put back shifts that are still empty. If someone (or auto-fill)
+            // filled one in the meantime, restoring would silently destroy that work.
+            let restored = 0, skipped = 0;
+            backup.forEach(b => {
+                if (getAssignedForShift(b.date, b.shift).length > 0) { skipped++; return; }
+                setAssignedForShift(b.date, b.shift, b.ids);
+                restored++;
+            });
+            if (skipped) {
+                alert(`Restaurados ${restored} turnos. ${skipped} não foram repostos porque já tinham sido preenchidos entretanto.`);
+            }
             save();
             // Jump back to the restored month so the result is visible
             currentSchedMonth = clearedMonth; currentSchedYear = clearedYear;
@@ -3024,12 +3257,12 @@ function getTarefeiroVagas(terc, monthsAhead = 6) {
                 const marked = !!(avail[dk] && avail[dk][shift]);
                 const assignedArr = getAssignedForShift(dt, shift);
                 const free = DOCTORS_PER_SHIFT - assignedArr.length;
-                // Offer real gaps in started months; always keep own marks visible.
-                if (!marked && !(scheduled && free > 0)) return;
-                out.push({
-                    date: dt, dk, shift, free, marked,
-                    assigned: assignedArr.includes(terc.id),
-                });
+                const assigned = assignedArr.includes(terc.id);
+                // Offer real gaps in started months; always keep own marks AND shifts
+                // they're actually scheduled for (an admin can roster them directly,
+                // which leaves no mark — they must still see it).
+                if (!marked && !assigned && !(scheduled && free > 0)) return;
+                out.push({ date: dt, dk, shift, free, marked, assigned });
             });
         }
     }
@@ -3158,7 +3391,7 @@ function renderTarefeiroVagas(terc) {
                     confirmed: 'Vai trabalhar',
                     pending: 'À espera',
                     lost: 'Foi para outro',
-                    open: s.free === 1 ? '1 vaga' : `${s.free} vagas`,
+                    open: s.free === 1 ? '1 vaga' : `${Math.max(s.free, 0)} vagas`,
                     full: 'Completo',
                 }[s.state];
                 const clickable = s.state !== 'confirmed' && s.state !== 'full';
@@ -3186,7 +3419,35 @@ window.toggleVaga = function(dk, shift) {
     if (!t) return;
     if (!t.monthlyAvailability) t.monthlyAvailability = {};
     const avail = t.monthlyAvailability;
-    if (avail[dk] && avail[dk][shift]) {
+    const removing = !!(avail[dk] && avail[dk][shift]);
+
+    // Re-validate at click time. The screen may have been rendered hours ago: without
+    // this, a tap on a stale chip wrote a request that every admin view filters out —
+    // the tarefeiro waited forever for something nobody could see.
+    if (!removing) {
+        const dt = new Date(dk + 'T00:00:00');
+        if (isNaN(dt.getTime())) return;
+        const today = new Date(); today.setHours(0, 0, 0, 0);
+        const assigned = getAssignedForShift(dt, shift);
+        if (dt < today) {
+            alert('Esse turno já passou.');
+            renderTerceiros();
+            return;
+        }
+        if (assigned.includes(t.id)) { renderTerceiros(); return; }   // already scheduled
+        if (DOCTORS_PER_SHIFT - assigned.length <= 0) {
+            alert('Esse turno já foi preenchido entretanto.');
+            renderTerceiros();
+            return;
+        }
+        if (!monthHasSchedule(dt.getFullYear(), dt.getMonth())) {
+            alert('A escala desse mês ainda não foi feita.');
+            renderTerceiros();
+            return;
+        }
+    }
+
+    if (removing) {
         delete avail[dk][shift];
         if (!avail[dk].day && !avail[dk].night) delete avail[dk];
     } else {
@@ -3226,6 +3487,8 @@ function getPendingTerceiroRequests(monthsAhead = 6) {
 
 // Is there a pending request for this exact shift? (used by the schedule markers)
 function pendingRequestsForShift(date, shift) {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    if (date < today) return [];        // never offer to accept a shift that already happened
     const dk = dateKey(date);
     const assigned = getAssignedForShift(date, shift);
     if (DOCTORS_PER_SHIFT - assigned.length <= 0) return [];
@@ -3251,7 +3514,7 @@ function renderPendingRequestsPanel() {
         const isNight = r.shift === 'night';
         html += `<div class="req-row">
             <div class="req-who">
-                <span class="req-name">${r.terc.name}</span>
+                <span class="req-name">${esc(r.terc.name)}</span>
                 <span class="req-when">${DAYS[dow]} ${r.date.getDate()} ${MONTH_NAMES[r.date.getMonth()].slice(0,3)} ·
                     <span class="${isNight ? 'req-night' : 'req-day'}">${isNight ? '🌙' : '☀️'} ${SHIFT_LABELS[r.shift]}</span>
                     · ${r.free === 1 ? '1 vaga' : `${r.free} vagas`}</span>
@@ -3467,6 +3730,7 @@ document.getElementById('add-terceiro-btn').addEventListener('click', () => {
     terceiroForm.reset();
     document.getElementById('terc-id').value = '';
     modalTercAvailData = {};
+    modalTercAvailBase = {};
     modalTercAvailMonth = new Date().getMonth();
     modalTercAvailYear = new Date().getFullYear();
     renderTercModalCalendar();
@@ -3486,27 +3750,7 @@ window.editTerceiro = function(id) {
     document.getElementById('terc-phone').value = t.phone || '';
     document.getElementById('terc-email').value = t.email || '';
     modalTercAvailData = JSON.parse(JSON.stringify(t.monthlyAvailability || {}));
-    modalTercAvailMonth = new Date().getMonth();
-    modalTercAvailYear = new Date().getFullYear();
-    renderTercModalCalendar();
-    terceiroModal.classList.add('open');
-};
-
-// Tarefeiro self-service: edit only my own availability, restricted to furo shifts.
-window.openMyAvailability = function() {
-    const t = terceiros.find(x => x.id === currentTerceiroId);
-    if (!t) return;
-    tercFuroOnly = true;
-    terceiroModal.classList.add('furo-mode');
-    document.getElementById('terc-avail-help').innerHTML =
-        `Clique em <strong>D</strong> (diurno) ou <strong>N</strong> (noturno) para se propor. Só os turnos com <strong>furo</strong> (destacados) estão disponíveis; os restantes já têm ${DOCTORS_PER_SHIFT} escalados.`;
-    document.getElementById('terc-modal-title').textContent = 'A minha disponibilidade';
-    document.getElementById('terc-id').value = t.id;
-    document.getElementById('terc-name').value = t.name;
-    document.getElementById('terc-specialty').value = t.specialty || '';
-    document.getElementById('terc-phone').value = t.phone || '';
-    document.getElementById('terc-email').value = t.email || '';
-    modalTercAvailData = JSON.parse(JSON.stringify(t.monthlyAvailability || {}));
+    modalTercAvailBase = JSON.parse(JSON.stringify(modalTercAvailData));
     modalTercAvailMonth = new Date().getMonth();
     modalTercAvailYear = new Date().getFullYear();
     renderTercModalCalendar();
@@ -3544,15 +3788,20 @@ terceiroForm.addEventListener('submit', e => {
         return;
     }
 
+    const idx = terceiros.findIndex(x => x.id === id);
+    // Only overwrite availability if the admin actually touched the calendar. Otherwise
+    // opening a card to fix a phone number wiped every request made while it was open.
+    const touchedCalendar = JSON.stringify(modalTercAvailData) !== JSON.stringify(modalTercAvailBase);
+    const liveAvail = idx >= 0 ? (terceiros[idx].monthlyAvailability || {}) : {};
     const tData = {
+        ...(idx >= 0 ? terceiros[idx] : {}),
         id,
         name: document.getElementById('terc-name').value.trim(),
         specialty: document.getElementById('terc-specialty').value.trim(),
         phone: document.getElementById('terc-phone').value.trim(),
         email: document.getElementById('terc-email').value.trim(),
-        monthlyAvailability: { ...modalTercAvailData },
+        monthlyAvailability: touchedCalendar ? { ...modalTercAvailData } : { ...liveAvail },
     };
-    const idx = terceiros.findIndex(x => x.id === id);
     if (idx >= 0) terceiros[idx] = tData;
     else terceiros.push(tData);
     save();
