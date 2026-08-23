@@ -841,7 +841,7 @@ async function renderUsersAdmin() {
 
         html += `<tr class="${isSelf ? 'row-self' : ''}">
             <td><strong>${p.name || '—'}</strong></td>
-            <td>${p.email}</td>
+            <td>${esc(p.email || "—")}</td>
             <td>
                 <select class="role-select" data-uid="${p.id}" ${isSelf ? 'disabled' : ''}>
                     <option value="read" ${(p.role !== 'admin' && p.role !== 'tarefeiro') ? 'selected' : ''}>Leitura</option>
@@ -1221,7 +1221,7 @@ function renderScheduleList() {
                 pendingRequestsForShift(d, shift).forEach(t => {
                     html += `<div class="doctor-tag pending-tag"
                         data-fullname="${esc(t.name)}" data-shift-type="Pedido de tarefeiro">
-                        <span>${t.name}</span>
+                        <span>${esc(t.name)}</span>
                         <button class="accept-req" data-terc="${t.id}" data-date="${dk}" data-shift="${shift}" title="ACEITAR: escalar ${esc(t.name)} neste turno">✓</button>
                         <button class="decline-req" data-terc="${t.id}" data-date="${dk}" data-shift="${shift}" title="RECUSAR o pedido de ${esc(t.name)}">✕</button>
                     </div>`;
@@ -1630,7 +1630,7 @@ function openAssignModal(dk, shift) {
         const canAssign = !blocked && !monthlyUnavail && !overLimit && (available || isRotationDoc);
         html += `<li class="assign-item ${!canAssign ? 'unavailable' : ''}"
                      data-doc-id="${doc.id}" data-available="true">
-            <span>${doc.name}${hoursHtml}</span>
+            <span>${esc(doc.name)}${hoursHtml}</span>
             <span>${badges.join(' ')}</span>
         </li>`;
     });
@@ -1781,7 +1781,7 @@ function ensureCell(key, n) {
 function rotationCellOptions(selected) {
     let opts = '<option value="">—</option>';
     doctors.forEach(doc => {
-        opts += `<option value="${doc.id}"${doc.id === selected ? ' selected' : ''}>${doc.name}</option>`;
+        opts += `<option value="${doc.id}"${doc.id === selected ? ' selected' : ''}>${esc(doc.name)}</option>`;
     });
     return opts;
 }
@@ -2635,7 +2635,7 @@ function renderDoctors() {
         html += `<div class="doctor-card">
             <div class="doctor-card-header">
                 <div>
-                    <h3>${doc.name}</h3>
+                    <h3>${esc(doc.name)}</h3>
                     <span class="specialty">${doc.specialty || '—'}</span>
                 </div>
                 <div>${badgesHtml}</div>
@@ -3623,13 +3623,13 @@ function renderTerceiros() {
         html += `<div class="doctor-card">
             <div class="doctor-card-header">
                 <div>
-                    <h3>${t.name} <span style="font-size:11px;background:#8e44ad;color:#fff;border-radius:4px;padding:2px 6px;font-weight:600">TAREFEIRO</span></h3>
+                    <h3>${esc(t.name)} <span style="font-size:11px;background:#8e44ad;color:#fff;border-radius:4px;padding:2px 6px;font-weight:600">TAREFEIRO</span></h3>
                     <span class="specialty">${t.specialty || '—'}</span>
                 </div>
             </div>
             <div class="info-row">
-                ${t.phone ? `<span>📞 ${t.phone}</span>` : ''}
-                ${t.email ? `<span>✉ ${t.email}</span>` : ''}
+                ${t.phone ? `<span>📞 ${esc(t.phone)}</span>` : ''}
+                ${t.email ? `<span>✉ ${esc(t.email)}</span>` : ''}
             </div>
             <div class="avail-summary">Disponível em ${availCount} dias — ${MONTH_NAMES[curMonth]} ${curYear}</div>
             <div class="card-actions write-only">
@@ -3949,7 +3949,7 @@ function renderHoursSummary() {
 
     doctors.forEach(doc => {
         html += '<tr>';
-        html += `<td class="doctor-name">${doc.name}</td>`;
+        html += `<td class="doctor-name">${esc(doc.name)}</td>`;
         let accumExtra = 0;
 
         for (let m = 0; m < 12; m++) {
@@ -4015,7 +4015,7 @@ function renderHoursSummary() {
         grandExtra += yearExtra;
 
         yHtml += '<tr>';
-        yHtml += `<td class="doctor-name">${doc.name}</td>`;
+        yHtml += `<td class="doctor-name">${esc(doc.name)}</td>`;
         yHtml += `<td class="${yearTheor === 0 ? 'theor-cell zero' : 'theor-cell'}">${yearTheor}h</td>`;
         yHtml += `<td class="${yearFixed === 0 ? 'fixed-cell zero' : 'fixed-cell'}">${yearFixed}h</td>`;
         yHtml += `<td class="${yearExtra === 0 ? 'extra-cell zero' : 'extra-cell has-hours'}">${yearExtra}h</td>`;
