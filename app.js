@@ -501,7 +501,7 @@ async function onSignIn(user) {
 
     if (currentRole === 'tarefeiro') {
         // Link this user to their terceiro card by email
-        const mine = terceiros.find(t => (t.email || '').toLowerCase() === (user.email || '').toLowerCase());
+        const mine = terceiros.find(t => normEmail(t.email) === normEmail(user.email));
         currentTerceiroId = mine ? mine.id : null;
         enterTarefeiroMode();
         return;
@@ -571,6 +571,12 @@ document.getElementById('logout-btn').addEventListener('click', async () => {
 
 // ---- Users Admin ----
 
+// Emails are matched case- and whitespace-insensitively: a stray space typed into
+// a card would otherwise silently leave a tarefeiro with "conta não associada".
+function normEmail(e) {
+    return (e || '').trim().toLowerCase();
+}
+
 async function renderUsersAdmin() {
     const list = document.getElementById('users-list');
     list.innerHTML = '<div class="empty-state"><p>A carregar…</p></div>';
@@ -581,14 +587,40 @@ async function renderUsersAdmin() {
         return;
     }
 
-    let html = `<table class="users-table">
+    // Which tarefeiro cards have no account yet? (matched by email, like the login does)
+    const accountEmails = new Set(profiles.map(p => normEmail(p.email)));
+    const cardsWithoutAccount = terceiros.filter(t => !accountEmails.has(normEmail(t.email)));
+
+    let html = '';
+    if (cardsWithoutAccount.length) {
+        const missing = cardsWithoutAccount
+            .map(t => t.name + ' <em>(' + (t.email || 'cartão sem email') + ')</em>')
+            .join(' · ');
+        const label = cardsWithoutAccount.length === 1 ? 'tarefeiro sem conta' : 'tarefeiros sem conta';
+        html += `<div class="link-warn">
+            <strong>⚠ ${cardsWithoutAccount.length} ${label}:</strong> ${missing}
+        </div>`;
+    }
+
+    html += `<table class="users-table">
         <thead><tr>
-            <th>Nome</th><th>Email</th><th>Papel</th><th>Desde</th><th>Ações</th>
+            <th>Nome</th><th>Email</th><th>Papel</th><th>Cartão ligado</th><th>Desde</th><th>Ações</th>
         </tr></thead><tbody>`;
 
     profiles.forEach(p => {
         const isSelf = p.id === currentUser.id;
         const since = new Date(p.created_at).toLocaleDateString('pt-PT');
+
+        // For tarefeiro accounts, show whether the email finds a card — the exact
+        // check the app does at login, so what you see here is what they'll get.
+        let linkCell = '<span class="link-na">—</span>';
+        if (p.role === 'tarefeiro') {
+            const card = terceiros.find(t => normEmail(t.email) === normEmail(p.email));
+            linkCell = card
+                ? `<span class="link-ok">✓ ${card.name}</span>`
+                : `<span class="link-bad">✗ sem cartão</span>`;
+        }
+
         html += `<tr class="${isSelf ? 'row-self' : ''}">
             <td><strong>${p.name || '—'}</strong></td>
             <td>${p.email}</td>
@@ -599,6 +631,7 @@ async function renderUsersAdmin() {
                     <option value="admin" ${p.role === 'admin' ? 'selected' : ''}>Admin</option>
                 </select>
             </td>
+            <td>${linkCell}</td>
             <td>${since}</td>
             <td>${isSelf ? '<span class="badge badge-self">Você</span>' : `<button class="btn btn-sm btn-danger" onclick="deleteUser('${p.id}')">Remover</button>`}</td>
         </tr>`;
