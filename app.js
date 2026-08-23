@@ -1065,19 +1065,28 @@ function renderScheduleCalendar() {
                 const isTerceiro = !doctors.find(x => x.id === docId) && !!terceiros.find(x => x.id === docId);
                 const isRotation = rotationDocIds.includes(docId);
                 const isFixed = doc && isFixedForShiftOnDate(doc, d, shift);
-                const tagClass = isRotation ? 'rotation-tag' : isFixed ? 'fixed-tag' : isTerceiro ? 'terceiro-tag' : '';
+                // Someone can be assigned and THEN marked férias/indisponível: the shift
+                // stays, so flag it or the schedule quietly has them working on holiday.
+                const emConflito = doc && !isTerceiro && isMonthlyUnavailable(doc, d, shift);
+                const conflitoFerias = emConflito && isOnVacation(doc, d, shift);
+                const tagClass = (isRotation ? 'rotation-tag' : isFixed ? 'fixed-tag' : isTerceiro ? 'terceiro-tag' : '')
+                    + (emConflito ? ' tag-conflito' : '');
+                const conflitoTitulo = emConflito
+                    ? (conflitoFerias ? 'Está de FÉRIAS neste turno' : 'Está marcado como INDISPONÍVEL neste turno')
+                    : '';
                 const firstName = doc ? doc.name.split(' ')[0] : '?';
                 const hoursUsed = isTerceiro ? null : getMonthlyExtraHours(docId, d.getFullYear(), d.getMonth());
                 const hoursLimit = doc ? (doc.monthlyHoursLimit || 0) : 0;
                 const shiftType = isTerceiro ? 'Tarefeiro' : isFixed ? 'Fixo' : 'Extra';
                 html += `<div class="doctor-tag ${tagClass}"
-                    data-fullname="${doc ? doc.name : '?'}"
+                    ${emConflito ? `title="${esc(conflitoTitulo)}"` : ''}
+                    data-fullname="${esc(doc ? doc.name : '?')}"
                     data-hours-used="${hoursUsed ?? ''}"
                     data-hours-limit="${hoursLimit}"
                     data-shift-type="${shiftType}"
                     data-doc-id="${docId}">
-                    <span>${firstName}</span>
-                    <button class="remove-doc" data-date="${dk}" data-shift="${shift}" data-doc="${docId}">&times;</button>
+                    <span>${emConflito ? '⚠ ' : ''}${esc(firstName)}</span>
+                    <button class="remove-doc" data-date="${dk}" data-shift="${shift}" data-doc="${docId}" aria-label="Remover">&times;</button>
                 </div>`;
             });
 
@@ -1239,18 +1248,27 @@ function renderScheduleList() {
                 const isTerceiro = !doctors.find(x => x.id === docId) && !!terceiros.find(x => x.id === docId);
                 const isRotation = rotationDocIds.includes(docId);
                 const isFixed = doc && isFixedForShiftOnDate(doc, d, shift);
-                const tagClass = isRotation ? 'rotation-tag' : isFixed ? 'fixed-tag' : isTerceiro ? 'terceiro-tag' : '';
+                // Someone can be assigned and THEN marked férias/indisponível: the shift
+                // stays, so flag it or the schedule quietly has them working on holiday.
+                const emConflito = doc && !isTerceiro && isMonthlyUnavailable(doc, d, shift);
+                const conflitoFerias = emConflito && isOnVacation(doc, d, shift);
+                const tagClass = (isRotation ? 'rotation-tag' : isFixed ? 'fixed-tag' : isTerceiro ? 'terceiro-tag' : '')
+                    + (emConflito ? ' tag-conflito' : '');
+                const conflitoTitulo = emConflito
+                    ? (conflitoFerias ? 'Está de FÉRIAS neste turno' : 'Está marcado como INDISPONÍVEL neste turno')
+                    : '';
                 const hoursUsed = isTerceiro ? null : getMonthlyExtraHours(docId, d.getFullYear(), d.getMonth());
                 const hoursLimit = doc ? (doc.monthlyHoursLimit || 0) : 0;
                 const shiftType = isTerceiro ? 'Tarefeiro' : isFixed ? 'Fixo' : 'Extra';
                 html += `<div class="doctor-tag ${tagClass}"
-                    data-fullname="${doc ? doc.name : '?'}"
+                    ${emConflito ? `title="${esc(conflitoTitulo)}"` : ''}
+                    data-fullname="${esc(doc ? doc.name : '?')}"
                     data-hours-used="${hoursUsed ?? ''}"
                     data-hours-limit="${hoursLimit}"
                     data-shift-type="${shiftType}"
                     data-doc-id="${docId}">
-                    <span>${doc ? doc.name : '?'}</span>
-                    <button class="remove-doc" data-date="${dk}" data-shift="${shift}" data-doc="${docId}">&times;</button>
+                    <span>${emConflito ? '⚠ ' : ''}${esc(doc ? doc.name : '?')}</span>
+                    <button class="remove-doc" data-date="${dk}" data-shift="${shift}" data-doc="${docId}" aria-label="Remover">&times;</button>
                 </div>`;
             });
 
@@ -2444,6 +2462,19 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
     save();
     renderSchedule();
     renderHoursSummary();
+
+    // Shifts already assigned to someone since marked férias/indisponível: auto-fill
+    // never removes them, so list them too or they stay invisible.
+    dates.forEach(date => {
+        SHIFTS.forEach(shift => {
+            getAssignedForShift(date, shift).forEach(id => {
+                const doc = doctors.find(x => x.id === id);
+                if (!doc || !isMonthlyUnavailable(doc, date, shift)) return;
+                const motivo = isOnVacation(doc, date, shift) ? 'está de FÉRIAS' : 'está INDISPONÍVEL';
+                conflitos.push(`${nomeCurto(id)} — ${dataCurta(date)} ${SHIFT_LABELS[shift].toLowerCase()}: continua escalado mas ${motivo}.`);
+            });
+        });
+    });
 
     if (conflitos.length) {
         const max = 12;

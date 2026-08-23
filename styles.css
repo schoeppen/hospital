@@ -2367,3 +2367,11 @@ body:not(.role-admin) .admin-only  { display: none !important; }
 }
 .doctor-tag .remove-doc:focus-visible,
 .add-slot:focus-visible { opacity: 1; outline: 2px solid var(--brand-500); outline-offset: 1px; }
+
+/* Assigned but marked férias/indisponível — the shift stays, so make it obvious */
+.doctor-tag.tag-conflito {
+    background: var(--red-light) !important;
+    color: var(--red-text) !important;
+    border: 1px dashed var(--red) !important;
+    font-weight: 700;
+}
