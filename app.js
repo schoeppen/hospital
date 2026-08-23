@@ -2121,6 +2121,15 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
                 if (!isFixedForShiftOnDate(doc, date, shift) || isMonthlyUnavailable(doc, date, shift)) return;
                 if (arr.includes(doc.id)) return;
 
+                // "Bloqueado (semanal)" is an explicit "never this shift", so it beats a
+                // rotation cell that says otherwise. Every other pass already checked this;
+                // PASS 1 did not, so the rotation silently won and the schedule contradicted
+                // the assign modal, which greys the same doctor out as unavailable.
+                if (isBlockedOnDate(doc, date, shift)) {
+                    conflitos.push(`${nomeCurto(doc.id)} — ${dataCurta(date)} ${turno}: não atribuído (está bloqueado neste turno, mas a rotação/horário pede-o).`);
+                    return;
+                }
+
                 if (wouldDoubleBookSameDay(doc, date, shift)) {
                     conflitos.push(`${nomeCurto(doc.id)} — ${dataCurta(date)} ${turno}: não atribuído (ficaria com dia+noite seguidos e não faz 24h).`);
                     return;
@@ -2133,12 +2142,16 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
                     conflitos.push(`${nomeCurto(doc.id)} — ${dataCurta(date)} ${turno}: não atribuído (o turno já tem ${DOCTORS_PER_SHIFT}).`);
                     return;
                 }
-                // Placed, because it's what the admin configured — but flag the rest
-                // rules it breaks so a bad rotation/fixed combination is visible.
+                // Rest wins over the configured schedule: a fixed/rotation shift that
+                // would break the post-night rest is refused, not placed with a warning.
+                // The slot is left open so a rested doctor can take it in PASS 3.
                 if (needsRestAfterNight(doc.id, date, shift)) {
-                    conflitos.push(`${nomeCurto(doc.id)} — ${dataCurta(date)} ${turno}: atribuído SEM descanso (fez a noite anterior).`);
-                } else if (shift === 'night' && hasNextDayConflict(doc.id, date)) {
-                    conflitos.push(`${nomeCurto(doc.id)} — ${dataCurta(date)} noturno: atribuído, mas já trabalha no dia seguinte.`);
+                    conflitos.push(`${nomeCurto(doc.id)} — ${dataCurta(date)} ${turno}: não atribuído (fez a noite anterior, precisa de descanso).`);
+                    return;
+                }
+                if (shift === 'night' && hasNextDayConflict(doc.id, date)) {
+                    conflitos.push(`${nomeCurto(doc.id)} — ${dataCurta(date)} noturno: não atribuído (já trabalha no dia seguinte).`);
+                    return;
                 }
                 arr.push(doc.id);
             });
@@ -2472,6 +2485,20 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
                 if (!doc || !isMonthlyUnavailable(doc, date, shift)) return;
                 const motivo = isOnVacation(doc, date, shift) ? 'está de FÉRIAS' : 'está INDISPONÍVEL';
                 conflitos.push(`${nomeCurto(id)} — ${dataCurta(date)} ${SHIFT_LABELS[shift].toLowerCase()}: continua escalado mas ${motivo}.`);
+            });
+        });
+    });
+
+    // Rest violations already in the schedule. PASS 1 refuses to create these, but it
+    // skips anyone already assigned, so a month filled before this rule existed — or
+    // filled by hand — would keep the violation and report nothing. Checking the final
+    // schedule also makes the report the same on every re-run.
+    dates.forEach(date => {
+        SHIFTS.forEach(shift => {
+            getAssignedForShift(date, shift).forEach(id => {
+                const doc = doctors.find(x => x.id === id);
+                if (!doc || !needsRestAfterNight(id, date, shift)) return;
+                conflitos.push(`${nomeCurto(id)} — ${dataCurta(date)} ${SHIFT_LABELS[shift].toLowerCase()}: já estava escalado SEM descanso (fez a noite anterior).`);
             });
         });
     });
