@@ -237,6 +237,18 @@ nav {
     color: rgba(255,255,255,0.9) !important;
     border-color: rgba(255,255,255,0.2) !important;
 }
+/* The rule above is for the dark header. "Regras" sits in the light schedule
+   toolbar instead, where white-on-white made it unreadable. */
+.schedule-toolbar .btn-export {
+    background: var(--card) !important;
+    color: var(--gray-700) !important;
+    border: 1px solid var(--gray-300) !important;
+}
+.schedule-toolbar .btn-export:hover {
+    background: var(--gray-100) !important;
+    color: var(--gray-900) !important;
+    border-color: var(--gray-400) !important;
+}
 
 .save-status {
     font-size: 11.5px;
@@ -593,7 +605,7 @@ main {
     font-weight: 600;
     font-size: 13px;
     position: sticky;
-    top: 0;
+    
     z-index: 2;
 }
 .grid-header.grid-corner { z-index: 3; }
@@ -1097,7 +1109,10 @@ h4 {
     text-transform: uppercase;
     letter-spacing: 0.6px;
 }
-.cal-day {
+/* Mini-calendars inside modals. Scoped to .monthly-calendar: these rules used to
+   also hit the month grid, which shares the .cal-day class, shrinking its cells
+   to 52px and thinning the completeness bar. */
+.monthly-calendar .cal-day {
     border: 1.5px solid var(--gray-200);
     border-radius: var(--radius-sm);
     padding: 4px 2px;
@@ -1108,24 +1123,24 @@ h4 {
     background: var(--card);
     position: relative;
 }
-.cal-day:hover { border-color: var(--brand-400); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
-.cal-day.empty { background: transparent; border-color: transparent; cursor: default; }
-.cal-day.empty:hover { box-shadow: none; }
-.cal-day .day-num { font-size: 11px; font-weight: 700; margin-bottom: 3px; color: var(--gray-700); }
-.cal-day .day-shifts { display: flex; gap: 2px; justify-content: center; }
-.cal-day .shift-dot {
+.monthly-calendar .cal-day:hover { border-color: var(--brand-400); box-shadow: 0 0 0 3px rgba(37,99,235,0.1); }
+.monthly-calendar .cal-day.empty { background: transparent; border-color: transparent; cursor: default; }
+.monthly-calendar .cal-day.empty:hover { box-shadow: none; }
+.monthly-calendar .cal-day .day-num { font-size: 11px; font-weight: 700; margin-bottom: 3px; color: var(--gray-700); }
+.monthly-calendar .cal-day .day-shifts { display: flex; gap: 2px; justify-content: center; }
+.monthly-calendar .cal-day .shift-dot {
     width: 16px; height: 14px;
     border-radius: 3px;
     font-size: 8px;
     display: flex; align-items: center; justify-content: center;
     font-weight: 700; color: #fff; opacity: 0.16;
 }
-.cal-day .shift-dot.day-dot   { background: var(--shift-day); }
-.cal-day .shift-dot.night-dot { background: var(--shift-night); }
-.cal-day .shift-dot.active    { opacity: 1; }
-.cal-day .shift-dot.avail-yes      { opacity: 1; background: var(--green) !important; }
-.cal-day .shift-dot.avail-no       { opacity: 1; background: var(--red)   !important; }
-.cal-day .shift-dot.avail-vacation { opacity: 1; background: var(--amber) !important; }
+.monthly-calendar .cal-day .shift-dot.day-dot   { background: var(--shift-day); }
+.monthly-calendar .cal-day .shift-dot.night-dot { background: var(--shift-night); }
+.monthly-calendar .cal-day .shift-dot.active    { opacity: 1; }
+.monthly-calendar .cal-day .shift-dot.avail-yes      { opacity: 1; background: var(--green) !important; }
+.monthly-calendar .cal-day .shift-dot.avail-no       { opacity: 1; background: var(--red)   !important; }
+.monthly-calendar .cal-day .shift-dot.avail-vacation { opacity: 1; background: var(--amber) !important; }
 .cal-day.past    { opacity: 0.35; }
 .cal-day.weekend { background: var(--gray-50); }
 .fixed-monthly-cal .shift-dot.day-dot   { background: var(--brand-500); }
@@ -1524,7 +1539,7 @@ body.role-tarefeiro .doctors-list { grid-template-columns: 1fr; max-width: 680px
 }
 .rot-grid thead th {
     background: var(--gray-100); color: var(--gray-700);
-    font-weight: 700; font-size: 12px; position: sticky; top: 0;
+    font-weight: 700; font-size: 12px; position: sticky; 
 }
 .rot-grid th.current, .rot-grid td.current { background: var(--brand-50); }
 .rot-grid thead th.current { background: var(--brand-100); color: var(--brand-600); }
@@ -1558,7 +1573,8 @@ body.role-tarefeiro .doctors-list { grid-template-columns: 1fr; max-width: 680px
     overflow: hidden; border: 1px solid var(--gray-200);
 }
 .hours-table th, .hours-table td { padding: 9px 11px; text-align: center; border: 1px solid var(--gray-100); white-space: nowrap; }
-.hours-table thead th { font-weight: 600; font-size: 12px; position: sticky; top: 0; z-index: 2; }
+.hours-table thead th {
+    top: 0; font-weight: 600; font-size: 12px; position: sticky;  z-index: 2; }
 .hours-table thead th { background: var(--brand-800); color: #fff; }
 .hours-table thead th.month-header { min-width: 110px; }
 .hours-table thead th.sub-header   { font-size: 11px; font-weight: 500; padding: 4px 6px; }
@@ -1733,6 +1749,16 @@ body.role-tarefeiro .doctors-list { grid-template-columns: 1fr; max-width: 680px
     .sched-list .shift-cell { padding: 5px 4px; }
     .sched-list .day-row-label { padding: 6px 4px; }
     .sched-list .doctor-tag { font-size: 10px; padding: 2px 5px; }
+
+    /* Touch targets: 17px ✓/✕ and 30px buttons are too small for a finger */
+    .doctor-tag.pending-tag .accept-req,
+    .doctor-tag.pending-tag .decline-req { width: 26px; height: 26px; font-size: 13px; margin-left: 4px; }
+    .req-accept, .req-decline { min-height: 44px; padding: 0 16px; font-size: 14px; }
+    .req-actions { width: 100%; gap: 10px; }
+    .req-actions .btn { flex: 1; }
+    .tf-tab { min-height: 44px; }
+    .doctor-card .card-actions .btn,
+    .rotation-card .card-actions .btn { min-height: 40px; padding: 0 14px; }
 
     /* Hours table — denser + keep the doctor-name column pinned while scrolling months */
     .hours-table th, .hours-table td { padding: 7px 6px; font-size: 12px; }
@@ -2048,6 +2074,8 @@ body.role-tarefeiro .doctors-list { grid-template-columns: 1fr; max-width: 680px
 }
 
 .btn-login {
+    height: auto !important;
+    min-height: 48px;
     width: 100%;
     padding: 14px;
     font-size: 15px;
@@ -2101,6 +2129,7 @@ body:not(.role-admin) .admin-only  { display: none !important; }
 .role-badge-read  { background: rgba(255,255,255,0.12); color: rgba(255,255,255,0.7); }
 .role-badge-write { background: rgba(5,150,105,0.25); color: #6ee7b7; }
 .role-badge-admin { background: rgba(245,158,11,0.25); color: #fcd34d; }
+.role-badge-tarefeiro { background: rgba(217,119,6,0.22); color: #fcd34d; }
 
 .btn-logout {
     background: transparent;
@@ -2197,7 +2226,7 @@ body:not(.role-admin) .admin-only  { display: none !important; }
     background: var(--card);
     border-radius: 16px;
     overflow: hidden;
-    box-shadow: var(--shadow-card);
+    box-shadow: var(--shadow-sm);
 }
 
 .users-table thead tr {
@@ -2327,3 +2356,14 @@ body:not(.role-admin) .admin-only  { display: none !important; }
 .link-ok  { color: var(--green-text); font-weight: 600; white-space: nowrap; }
 .link-bad { color: var(--red-text);   font-weight: 700; white-space: nowrap; }
 .link-na  { color: var(--gray-300); }
+
+
+/* Touch devices have no hover: the + and × were invisible, leaving no way to
+   remove someone from a shift on the tablet. */
+@media (hover: none) {
+    .cal-shift-row .add-slot,
+    .shift-cell .add-slot { opacity: 1; }
+    .doctor-tag .remove-doc { opacity: 0.55; }
+}
+.doctor-tag .remove-doc:focus-visible,
+.add-slot:focus-visible { opacity: 1; outline: 2px solid var(--brand-500); outline-offset: 1px; }

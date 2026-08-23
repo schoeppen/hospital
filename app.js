@@ -195,7 +195,7 @@ async function loadData() {
 
 // Pull other people's changes in without losing local edits (merged, never blind-replaced).
 async function refreshFromServer() {
-    if (_saveInFlight || _saveTimer) return;              // a save is mid-flight; it will merge
+    if (_saveInFlight || _saveTimer || _retryTimer) return;              // a save is mid-flight; it will merge
     const { data, error } = await db.from('app_data').select('*');
     if (error || !data) return;
     let changed = false;
@@ -421,13 +421,17 @@ async function performSave() {
         return;
     }
     _saveInFlight = true;
+    try {
 
     // Only push what THIS client actually changed, three-way merged against the
     // server's current value. A tarefeiro tapping one shift can no longer overwrite
     // the admin's schedule, and two people editing different things both survive.
-    const dirtyKeys = Object.keys(DATA_KEYS).filter(localChanged);
+    let dirtyKeys = Object.keys(DATA_KEYS).filter(localChanged);
+    // A tarefeiro may only write their own availability. RLS enforces this too, but
+    // the upsert is a single statement: including any other key would make the whole
+    // batch fail, silently losing the one change they're allowed to make.
+    if (currentRole === 'tarefeiro') dirtyKeys = dirtyKeys.filter(k => k === 'chbv_terceiros');
     if (dirtyKeys.length === 0) {
-        _saveInFlight = false;
         writeLocalCache(false);
         setSaveStatus('saved', '✓ Guardado');
         return;
@@ -457,7 +461,7 @@ async function performSave() {
             await new Promise(r => setTimeout(r, RETRY_BACKOFF_MS[attempt]));
         }
     }
-    _saveInFlight = false;
+    } finally { _saveInFlight = false; }   // never wedge the session on a throw
 
     if (lastError) {
         setSaveStatus('failed', '⚠ Falha ao guardar — vou tentar novamente');
@@ -553,9 +557,18 @@ function getScheduleForWeek() {
 }
 
 // Get schedule for a specific date (finds the correct week)
+// Read-only: must NOT create the week object. It used to, which meant merely
+// rendering a view (the tarefeiro panel walks 6 months) invented dozens of empty
+// weeks, marked chbv_schedules dirty, and made every tarefeiro save fail — RLS
+// only lets them write chbv_terceiros, so the whole upsert was rejected.
 function getScheduleForDate(date) {
-    const monday = getMonday(date);
-    const wk = weekKey(monday);
+    return schedules[weekKey(getMonday(date))] || EMPTY_WEEK;
+}
+const EMPTY_WEEK = Object.freeze({});
+
+// Writable variant: use this only when actually assigning someone.
+function getOrCreateScheduleForDate(date) {
+    const wk = weekKey(getMonday(date));
     if (!schedules[wk]) schedules[wk] = {};
     return schedules[wk];
 }
@@ -575,7 +588,7 @@ function isFuro(date, shift) {
 
 // Set assigned doctors for a specific date+shift
 function setAssignedForShift(date, shift, docIds) {
-    const sched = getScheduleForDate(date);
+    const sched = getOrCreateScheduleForDate(date);
     const sk = shiftKey(date, shift);
     sched[sk] = docIds;
 }
@@ -686,6 +699,8 @@ async function onSignIn(user) {
         showLoginScreen();
         document.getElementById('login-error').textContent = 'Conta removida ou sem acesso. Contacte o administrador.';
         document.getElementById('login-error').style.display = 'block';
+        const sb = document.getElementById('login-submit');
+        if (sb) { sb.disabled = false; sb.textContent = 'Entrar'; }
         return;
     }
     currentRole = profile.role || 'read';
@@ -712,12 +727,16 @@ async function onSignIn(user) {
         return;
     }
 
-    renderSchedule();
-    renderDoctors();
-    renderTerceiros();
-    renderRotations();
-    renderHoursSummary();
-    startAutoRefresh();
+    try {
+        renderSchedule();
+        renderDoctors();
+        renderTerceiros();
+        renderRotations();
+        renderHoursSummary();
+    } catch (e) {
+        console.error('Erro ao desenhar a aplicação:', e);
+    }
+    startAutoRefresh();   // must start even if a render threw
 }
 
 // Lock the UI down to just the Tarefeiros tab for a 'tarefeiro' user.
@@ -1116,7 +1135,7 @@ function renderScheduleCalendar() {
             const shift = btn.dataset.shift;
             const docId = btn.dataset.doc;
             const date = parseDateKey(dk);
-            const sched = getScheduleForDate(date);
+            const sched = getOrCreateScheduleForDate(date);
             const sk = shiftKey(date, shift);
             sched[sk] = (sched[sk] || []).filter(id => id !== docId);
             save();
@@ -1284,7 +1303,7 @@ function renderScheduleList() {
             const shift = btn.dataset.shift;
             const docId = btn.dataset.doc;
             const date = parseDateKey(dk);
-            const sched = getScheduleForDate(date);
+            const sched = getOrCreateScheduleForDate(date);
             const sk = shiftKey(date, shift);
             sched[sk] = (sched[sk] || []).filter(id => id !== docId);
             save();
@@ -1766,13 +1785,19 @@ const ROTATION_ROWS = [];
 for (let d = 0; d < 7; d++) for (const s of SHIFTS) ROTATION_ROWS.push({ dayIdx: d, shift: s });
 
 // Normalise a cell to exactly `n` weeks, each an array of up to DOCTORS_PER_SHIFT slots.
-function ensureCell(key, n) {
+// Read-only normalisation for rendering: does NOT write back. It used to, so simply
+// opening the Rotações view created empty cells for all 14 rows, marked the rotation
+// grid dirty, and let one admin's empty cell overwrite a row another admin had filled.
+function readCell(key, n) {
     const existing = rotationGrid.cells[key] || [];
     const norm = [];
-    for (let w = 0; w < n; w++) {
-        const week = (existing[w] || []).slice(0, DOCTORS_PER_SHIFT);
-        norm.push(week);
-    }
+    for (let w = 0; w < n; w++) norm.push((existing[w] || []).slice(0, DOCTORS_PER_SHIFT));
+    return norm;
+}
+
+// Writable variant: only call this when actually changing an assignment.
+function ensureCell(key, n) {
+    const norm = readCell(key, n);
     rotationGrid.cells[key] = norm;
     return norm;
 }
@@ -1823,7 +1848,7 @@ function renderRotations() {
 
     ROTATION_ROWS.forEach(({ dayIdx, shift }) => {
         const key = `${dayIdx}_${shift}`;
-        const cell = ensureCell(key, n);
+        const cell = readCell(key, n);        // render only — must not dirty the grid
         const shiftShort = shift === 'day' ? 'Dia' : 'Noite';
         html += `<tr class="rot-row rot-${shift}"><td class="rot-rowhead">${DAYS_FULL[dayIdx]}<span class="rot-shift">${shiftShort}</span></td>`;
         for (let w = 0; w < n; w++) {
@@ -2002,7 +2027,7 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
 
     // Helper to get/init sched array for a date+shift
     function getSk(date, shift) {
-        const sched = getScheduleForDate(date);
+        const sched = getOrCreateScheduleForDate(date);
         const sk = shiftKey(date, shift);
         if (!sched[sk]) sched[sk] = [];
         return { sched, sk, arr: sched[sk] };
@@ -2411,7 +2436,7 @@ document.getElementById('clear-week-btn').addEventListener('click', () => {
     const clearedMonth = currentSchedMonth, clearedYear = currentSchedYear;
     const backup = [];
     getMonthDates().forEach(date => {
-        const sched = getScheduleForDate(date);
+        const sched = getOrCreateScheduleForDate(date);
         SHIFTS.forEach(shift => {
             const sk = shiftKey(date, shift);
             if (sched[sk] && sched[sk].length) backup.push({ date: new Date(date), shift, ids: [...sched[sk]] });
