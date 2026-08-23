@@ -352,17 +352,34 @@ async function restoreHistory(id) {
     // Save current state to history before restoring
     lastHistorySaveTime = 0;
     await saveHistory();
+    // Validate before overwriting live state: a malformed column used to be assigned
+    // straight in and then throw inside every hours calculation.
+    if (!Array.isArray(data.doctors) || !data.schedules || typeof data.schedules !== 'object') {
+        alert('Essa versão está incompleta e não pode ser restaurada.');
+        return;
+    }
+    const prev = { doctors, schedules, rotationGrid, terceiros };
     doctors = data.doctors;
     schedules = data.schedules;
     rotationGrid = migrateRotationsToGrid(data.rotations);
-    terceiros = data.terceiros;
-    await db.from('app_data').upsert([
+    terceiros = Array.isArray(data.terceiros) ? data.terceiros : [];
+
+    const { error: writeErr } = await db.from('app_data').upsert([
         { key: 'chbv_doctors', value: doctors },
         { key: 'chbv_schedules', value: schedules },
         { key: 'chbv_rotations', value: rotationGrid },
         { key: 'chbv_terceiros', value: terceiros },
     ]);
-    renderSchedule(); renderDoctors(); renderTerceiros(); renderRotations(); renderHoursSummary();
+    if (writeErr) {
+        // Roll the local state back so the screen doesn't claim a restore that
+        // never reached the server.
+        doctors = prev.doctors; schedules = prev.schedules;
+        rotationGrid = prev.rotationGrid; terceiros = prev.terceiros;
+        alert('Não foi possível restaurar essa versão: ' + (writeErr.message || writeErr));
+        return;
+    }
+    snapshotBase();                      // the server now matches what we hold
+    renderAll();
     closeHistoryModal();
     showSaveStatus('Versão restaurada!');
 }
@@ -373,7 +390,7 @@ function openHistoryModal() {
     content.innerHTML = '<p style="padding:16px;color:#7f8c8d">A carregar...</p>';
     modal.classList.add('open');
     loadHistory().then(entries => {
-        if (entries.length === 0) {
+        if (!entries || entries.length === 0) {
             content.innerHTML = '<p style="padding:16px;color:#7f8c8d">Sem histórico guardado ainda.</p>';
             return;
         }
@@ -385,6 +402,8 @@ function openHistoryModal() {
                 <button class="btn btn-sm btn-primary" onclick="restoreHistory(${e.id})">Restaurar</button>
             </div>`;
         }).join('');
+    }).catch(err => {
+        content.innerHTML = `<p style="padding:16px;color:#991b1b">Erro ao carregar o histórico: ${esc(err.message || err)}</p>`;
     });
 }
 
@@ -1467,17 +1486,20 @@ function isFixedForShiftOnDate(doc, date, shift) {
     // Rotation-grid assignment counts as fixed (single source of truth for rotations)
     const rotDayIdx = (date.getDay() + 6) % 7;
     if (getRotationDoctorsForShift(rotDayIdx, shift, getMonday(date)).includes(doc.id)) return true;
-    // Check monthly fixed first (day-by-day overrides)
     if (doc.fixedMonthly) {
+        // Day-by-day monthly schedule replaces the weekly pattern — but NOT the
+        // day-of-week rules. This used to return here, so a doctor with "Fixo Mensal"
+        // plus rules had every rule shift booked as EXTRA, inflating their extra
+        // hours by 12-24h/month and pushing them over their own limit.
         const fmd = doc.fixedMonthlyData || {};
         const dk = dateKey(date);
-        return !!(fmd[dk] && fmd[dk][shift]);
+        if (fmd[dk] && fmd[dk][shift]) return true;
+    } else {
+        // Weekly repeating pattern (works data)
+        const dayIdx = (date.getDay() + 6) % 7; // Mon=0
+        if (doc.fixedSchedule && doc.fixedSchedule[`${dayIdx}_${shift}`]) return true;
     }
-    // Weekly repeating pattern (works data)
-    const dayIdx = (date.getDay() + 6) % 7; // Mon=0
-    const key = `${dayIdx}_${shift}`;
-    if (doc.fixedSchedule && doc.fixedSchedule[key]) return true;
-    // Monthly day-of-week rules count as fixed (not extra)
+    // Monthly day-of-week rules count as fixed (not extra), in both modes
     return isRuleBasedShift(doc, date, shift);
 }
 
@@ -1741,9 +1763,10 @@ function doctorHasRotation(docId) {
 }
 
 function getCurrentISOWeek() {
-    const d = new Date();
-    const wn = getWeekNumber(d);
-    return `${d.getFullYear()}-W${String(wn).padStart(2, '0')}`;
+    // Must use the ISO week-YEAR, not the calendar year: on 1 Jan 2027 the calendar
+    // year (2027) with week 53 gave "2027-W53", which resolves to Jan 2028 — putting
+    // the whole rotation cycle weeks out of phase until someone noticed.
+    return isoWeekString(new Date());
 }
 
 // ISO week string (YYYY-Www) for a date, using the ISO week-year (Thursday rule)
@@ -1869,6 +1892,35 @@ function renderRotations() {
         let v = parseInt(e.target.value);
         if (!v || v < 2) v = 2;
         v = Math.min(v, 52);
+        const anterior = rotationGrid.cycleLength || 8;
+        if (v === anterior) return;
+
+        // Shrinking the cycle deletes the trailing weeks of all 14 rows. It used to do
+        // that instantly, with no confirmation and no way back.
+        if (v < anterior) {
+            let turnosPerdidos = 0;
+            Object.values(rotationGrid.cells).forEach(cell => {
+                for (let w = v; w < (cell || []).length; w++) turnosPerdidos += (cell[w] || []).filter(Boolean).length;
+            });
+            if (turnosPerdidos > 0) {
+                const ok = confirm(
+                    `Reduzir o ciclo de ${anterior} para ${v} semanas apaga as semanas S${v + 1} a S${anterior}, ` +
+                    `com ${turnosPerdidos} ${turnosPerdidos === 1 ? 'turno atribuído' : 'turnos atribuídos'}.\n\nContinuar?`);
+                if (!ok) { e.target.value = anterior; return; }
+            }
+            const copia = JSON.parse(JSON.stringify(rotationGrid));   // for the undo banner
+            rotationGrid.cycleLength = v;
+            Object.keys(rotationGrid.cells).forEach(k => ensureCell(k, v));
+            save(); renderRotations(); renderSchedule();
+            if (turnosPerdidos > 0) {
+                showUndoToast(
+                    `Ciclo reduzido para <strong>${v} semanas</strong> — ${turnosPerdidos} turnos removidos.`,
+                    () => { rotationGrid = copia; save(); renderRotations(); renderSchedule();
+                            showSaveStatus('Ciclo restaurado'); });
+            }
+            return;
+        }
+
         rotationGrid.cycleLength = v;
         Object.keys(rotationGrid.cells).forEach(k => ensureCell(k, v));
         save();
@@ -2036,16 +2088,41 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
     // =========================================
     // PASS 1: Fixed-schedule doctors (highest priority)
     // =========================================
+    // Conflicts found while placing the admin's fixed/rotation configuration. These
+    // used to be silent in both directions: a dropped fixed shift left an unexplained
+    // hours deficit, and a rest violation was placed with no warning at all.
+    const conflitos = [];
+    const nomeCurto = id => { const d = doctors.find(x => x.id === id); return d ? d.name.split(' ')[0] : id; };
+    const dataCurta = d => `${d.getDate()}/${d.getMonth() + 1}`;
+
     dates.forEach(date => {
         SHIFTS.forEach(shift => {
             const { arr } = getSk(date, shift);
+            const turno = SHIFT_LABELS[shift].toLowerCase();
             doctors.forEach(doc => {
-                if (isFixedForShiftOnDate(doc, date, shift) && !isMonthlyUnavailable(doc, date, shift)) {
-                    if (wouldDoubleBookSameDay(doc, date, shift)) return; // no accidental 24h for non-24h doctors
-                    if (!arr.includes(doc.id) && arr.length < DOCTORS_PER_SHIFT && !workedOtherWeekendDay(doc.id, date)) {
-                        arr.push(doc.id);
-                    }
+                if (!isFixedForShiftOnDate(doc, date, shift) || isMonthlyUnavailable(doc, date, shift)) return;
+                if (arr.includes(doc.id)) return;
+
+                if (wouldDoubleBookSameDay(doc, date, shift)) {
+                    conflitos.push(`${nomeCurto(doc.id)} — ${dataCurta(date)} ${turno}: não atribuído (ficaria com dia+noite seguidos e não faz 24h).`);
+                    return;
                 }
+                if (workedOtherWeekendDay(doc.id, date)) {
+                    conflitos.push(`${nomeCurto(doc.id)} — ${dataCurta(date)} ${turno}: não atribuído (já trabalha o outro dia deste fim de semana).`);
+                    return;
+                }
+                if (arr.length >= DOCTORS_PER_SHIFT) {
+                    conflitos.push(`${nomeCurto(doc.id)} — ${dataCurta(date)} ${turno}: não atribuído (o turno já tem ${DOCTORS_PER_SHIFT}).`);
+                    return;
+                }
+                // Placed, because it's what the admin configured — but flag the rest
+                // rules it breaks so a bad rotation/fixed combination is visible.
+                if (needsRestAfterNight(doc.id, date, shift)) {
+                    conflitos.push(`${nomeCurto(doc.id)} — ${dataCurta(date)} ${turno}: atribuído SEM descanso (fez a noite anterior).`);
+                } else if (shift === 'night' && hasNextDayConflict(doc.id, date)) {
+                    conflitos.push(`${nomeCurto(doc.id)} — ${dataCurta(date)} noturno: atribuído, mas já trabalha no dia seguinte.`);
+                }
+                arr.push(doc.id);
             });
         });
     });
@@ -2366,6 +2443,14 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
 
     save();
     renderSchedule();
+    renderHoursSummary();
+
+    if (conflitos.length) {
+        const max = 12;
+        const lista = conflitos.slice(0, max).map(c => '\u2022 ' + c).join('\n');
+        const resto = conflitos.length > max ? `\n\n(e mais ${conflitos.length - max})` : '';
+        alert(`Escala preenchida, mas com ${conflitos.length} ${conflitos.length === 1 ? 'conflito' : 'conflitos'} no horário fixo/rotação:\n\n${lista}${resto}`);
+    }
 });
 
 // ---- Clear week ----
@@ -3862,6 +3947,9 @@ function getTheoreticalFixedHours(docId, year, month) {
     const daysInMonth = new Date(year, month + 1, 0).getDate();
     let hours = 0;
 
+    // Remember which (date, shift) slots were already counted, so a rule that lands
+    // on a slot the doctor is already fixed for isn't added a second time.
+    const counted = new Set();
     for (let day = 1; day <= daysInMonth; day++) {
         const date = new Date(year, month, day);
         SHIFTS.forEach(shift => {
@@ -3869,14 +3957,15 @@ function getTheoreticalFixedHours(docId, year, month) {
             if (isMonthlyUnavailable(doc, date, shift)) return;
             const dayIdx = (date.getDay() + 6) % 7;
             const inRotation = getRotationDoctorsForShift(dayIdx, shift, getMonday(date)).includes(docId);
+            const dk = dateKey(date);
+            let isFixedSlot;
             if (doc.fixedMonthly) {
                 const fmd = doc.fixedMonthlyData || {};
-                const dk = dateKey(date);
-                if ((fmd[dk] && fmd[dk][shift]) || inRotation) hours += HOURS_PER_SHIFT;
+                isFixedSlot = !!(fmd[dk] && fmd[dk][shift]) || inRotation;
             } else {
-                const key = `${dayIdx}_${shift}`;
-                if ((doc.fixedSchedule && doc.fixedSchedule[key]) || inRotation) hours += HOURS_PER_SHIFT;
+                isFixedSlot = !!(doc.fixedSchedule && doc.fixedSchedule[`${dayIdx}_${shift}`]) || inRotation;
             }
+            if (isFixedSlot) { hours += HOURS_PER_SHIFT; counted.add(dk + '_' + shift); }
         });
     }
 
@@ -3892,15 +3981,19 @@ function getTheoreticalFixedHours(docId, year, month) {
             const dow = (date.getDay() + 6) % 7;
             if (dow === rule.dayOfWeek) matchingDates.push(date);
         }
-        // Count up to rule.count occurrences, skipping unavailable days
-        let counted = 0;
+        // Count up to rule.count occurrences, skipping unavailable days, and only
+        // charging the shifts not already counted above (a "Quinta N" rule on top of
+        // a weekly-fixed Thursday night used to add a phantom 12h).
+        let done = 0;
         for (const date of matchingDates) {
-            if (counted >= rule.count) break;
+            if (done >= rule.count) break;
             const unavailable = shifts.some(s => isMonthlyUnavailable(doc, date, s));
-            if (!unavailable) {
-                hours += shifts.length * HOURS_PER_SHIFT;
-                counted++;
-            }
+            if (unavailable) continue;
+            const dk = dateKey(date);
+            const novos = shifts.filter(s => !counted.has(dk + '_' + s));
+            hours += novos.length * HOURS_PER_SHIFT;
+            novos.forEach(s => counted.add(dk + '_' + s));
+            done++;                       // the rule occurrence is satisfied either way
         }
     });
 
