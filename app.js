@@ -2253,31 +2253,31 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
                 // PASS 1 did not, so the rotation silently won and the schedule contradicted
                 // the assign modal, which greys the same doctor out as unavailable.
                 if (isBlockedOnDate(doc, date, shift)) {
-                    conflitos.push(`${nomeCurto(doc.id)} — ${dataCurta(date)} ${turno}: não atribuído (está bloqueado neste turno, mas a rotação/horário pede-o).`);
+                    conflitos.push({ motivo: 'bloqueado', texto: `${nomeCurto(doc.id)} — ${dataCurta(date)} ${turno}: está bloqueado neste turno, mas a rotação/horário pede-o.` });
                     return;
                 }
 
                 if (wouldDoubleBookSameDay(doc, date, shift)) {
-                    conflitos.push(`${nomeCurto(doc.id)} — ${dataCurta(date)} ${turno}: não atribuído (ficaria com dia+noite seguidos e não faz 24h).`);
+                    conflitos.push({ motivo: 'dia+noite', texto: `${nomeCurto(doc.id)} — ${dataCurta(date)} ${turno}: ficaria com dia+noite seguidos e não faz 24h.` });
                     return;
                 }
                 if (workedOtherWeekendDay(doc.id, date)) {
-                    conflitos.push(`${nomeCurto(doc.id)} — ${dataCurta(date)} ${turno}: não atribuído (já trabalha o outro dia deste fim de semana).`);
+                    conflitos.push({ motivo: 'fim de semana', texto: `${nomeCurto(doc.id)} — ${dataCurta(date)} ${turno}: já trabalha o outro dia deste fim de semana.` });
                     return;
                 }
                 if (arr.length >= DOCTORS_PER_SHIFT) {
-                    conflitos.push(`${nomeCurto(doc.id)} — ${dataCurta(date)} ${turno}: não atribuído (o turno já tem ${DOCTORS_PER_SHIFT}).`);
+                    conflitos.push({ motivo: 'turno cheio', texto: `${nomeCurto(doc.id)} — ${dataCurta(date)} ${turno}: o turno já tinha ${DOCTORS_PER_SHIFT} pessoas.` });
                     return;
                 }
                 // Rest wins over the configured schedule: a fixed/rotation shift that
                 // would break the post-night rest is refused, not placed with a warning.
                 // The slot is left open so a rested doctor can take it in PASS 3.
                 if (needsRestAfterNight(doc.id, date, shift)) {
-                    conflitos.push(`${nomeCurto(doc.id)} — ${dataCurta(date)} ${turno}: não atribuído (fez a noite anterior, precisa de descanso).`);
+                    conflitos.push({ motivo: 'descanso', texto: `${nomeCurto(doc.id)} — ${dataCurta(date)} ${turno}: fez a noite anterior, precisa de descanso.` });
                     return;
                 }
                 if (shift === 'night' && hasNextDayConflict(doc.id, date)) {
-                    conflitos.push(`${nomeCurto(doc.id)} — ${dataCurta(date)} noturno: não atribuído (já trabalha no dia seguinte).`);
+                    conflitos.push({ motivo: 'descanso', texto: `${nomeCurto(doc.id)} — ${dataCurta(date)} noturno: já trabalha no dia seguinte.` });
                     return;
                 }
                 arr.push(doc.id);
@@ -2611,7 +2611,7 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
                 const doc = doctors.find(x => x.id === id);
                 if (!doc || !isMonthlyUnavailable(doc, date, shift)) return;
                 const motivo = isOnVacation(doc, date, shift) ? 'está de FÉRIAS' : 'está INDISPONÍVEL';
-                conflitos.push(`${nomeCurto(id)} — ${dataCurta(date)} ${SHIFT_LABELS[shift].toLowerCase()}: continua escalado mas ${motivo}.`);
+                conflitos.push({ motivo: 'escalado de férias/indisponível', texto: `${nomeCurto(id)} — ${dataCurta(date)} ${SHIFT_LABELS[shift].toLowerCase()}: continua escalado mas ${motivo}.` });
             });
         });
     });
@@ -2625,7 +2625,7 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
             getAssignedForShift(date, shift).forEach(id => {
                 const doc = doctors.find(x => x.id === id);
                 if (!doc || !needsRestAfterNight(id, date, shift)) return;
-                conflitos.push(`${nomeCurto(id)} — ${dataCurta(date)} ${SHIFT_LABELS[shift].toLowerCase()}: já estava escalado SEM descanso (fez a noite anterior).`);
+                conflitos.push({ motivo: 'já escalado sem descanso', texto: `${nomeCurto(id)} — ${dataCurta(date)} ${SHIFT_LABELS[shift].toLowerCase()}: já estava escalado sem descanso.` });
             });
         });
     });
@@ -2634,14 +2634,35 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
     // because every other conflict below is a consequence, not the cause.
     const orfaos = getRotationOrphanIds();
     if (orfaos.length) {
-        conflitos.unshift(`Grelha de rotação: ${orfaos.length} ${orfaos.length === 1 ? 'médico que já não existe' : 'médicos que já não existem'} (${orfaos.slice(0, 3).join(', ')}${orfaos.length > 3 ? '…' : ''}) — esses turnos ficaram por preencher pela rotação.`);
+        conflitos.unshift({ motivo: 'médico já não existe', texto: `Grelha de rotação: ${orfaos.slice(0, 3).join(', ')}${orfaos.length > 3 ? '…' : ''} — a grelha pede quem já não está na lista de médicos.` });
     }
 
     if (conflitos.length) {
-        const max = 12;
-        const lista = conflitos.slice(0, max).map(c => '\u2022 ' + c).join('\n');
-        const resto = conflitos.length > max ? `\n\n(e mais ${conflitos.length - max})` : '';
-        alert(`Escala preenchida, mas com ${conflitos.length} ${conflitos.length === 1 ? 'conflito' : 'conflitos'} no horário fixo/rotação:\n\n${lista}${resto}`);
+        // Grouped by cause: a month that was already filled produces dozens of identical
+        // "turno cheio" lines, and a raw truncated list buried the one thing the admin
+        // needed to know — why the rotation could not get in.
+        const porMotivo = {};
+        conflitos.forEach(c => (porMotivo[c.motivo] = porMotivo[c.motivo] || []).push(c.texto));
+        const grupos = Object.entries(porMotivo).sort((a, b) => b[1].length - a[1].length);
+
+        const SUGESTAO = {
+            'turno cheio': 'já havia gente nesses turnos; Limpar Mês e preencher de novo dá a vez à rotação',
+            'médico já não existe': 'corrija esses lugares na tab Rotações',
+            'bloqueado': 'a grelha semanal e a rotação pedem coisas diferentes',
+            'dia+noite': 'ative "Pode fazer 24h" no perfil, ou mude a rotação',
+        };
+
+        const resumo = grupos.map(([motivo, itens]) => {
+            const dica = SUGESTAO[motivo] ? ` — ${SUGESTAO[motivo]}` : '';
+            return `\u2022 ${itens.length} \u00d7 ${motivo}${dica}`;
+        }).join('\n');
+
+        const max = 6;
+        const detalhe = grupos.flatMap(([, itens]) => itens).slice(0, max)
+            .map(t => '   \u2013 ' + t).join('\n');
+        const resto = conflitos.length > max ? `\n   \u2026 e mais ${conflitos.length - max}` : '';
+
+        alert(`Escala preenchida, com ${conflitos.length} ${conflitos.length === 1 ? 'lugar do horário/rotação por resolver' : 'lugares do horário/rotação por resolver'}:\n\n${resumo}\n\nExemplos:\n${detalhe}${resto}`);
     }
 });
 
