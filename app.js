@@ -1022,43 +1022,7 @@ function getRotationOrphanIds() {
     return [...orfaos];
 }
 
-// Which rotation week (S1..Sn) each week of the displayed month falls on. The admin
-// was counting weeks by hand from the anchor to work this out.
-function getMonthRotationWeeks() {
-    const vistos = new Map();
-    getMonthDates().forEach(d => {
-        const seg = getMonday(d);
-        const k = seg.getTime();
-        if (!vistos.has(k)) vistos.set(k, { seg, idx: rotationWeekIndex(seg) });
-    });
-    return [...vistos.values()].sort((a, b) => a.seg - b.seg);
-}
-
-function renderRotationWeekBar() {
-    const el = document.getElementById('rotation-week-bar');
-    if (!el) return;
-
-    const temRotacao = Object.values(rotationGrid.cells || {})
-        .some(weeks => (weeks || []).some(sem => (sem || []).length));
-    if (!temRotacao) { el.innerHTML = ''; return; }
-
-    const n = rotationGrid.cycleLength || 8;
-    const semanas = getMonthRotationWeeks().map(({ seg, idx }) => {
-        const dia = `${seg.getDate()}/${seg.getMonth() + 1}`;
-        return `<span class="rot-week-chip"><b>S${idx + 1}</b><span class="rot-week-date">${dia}</span></span>`;
-    }).join('');
-
-    const orfaos = getRotationOrphanIds();
-    const aviso = orfaos.length
-        ? `<div class="rot-week-warn">⚠ A grelha de rotação refere ${orfaos.length} ${orfaos.length === 1 ? 'médico que já não existe' : 'médicos que já não existem'}. Esses turnos não são preenchidos pela rotação — abra a tab Rotações para corrigir.</div>`
-        : '';
-
-    el.innerHTML =
-        `<div class="rot-week-row"><span class="rot-week-title">Rotação · ciclo de ${n} semanas</span>${semanas}</div>${aviso}`;
-}
-
 function renderSchedule() {
-    renderRotationWeekBar();
     if (scheduleViewMode === 'list') { renderScheduleList(); return; }
     renderScheduleCalendar();
 }
