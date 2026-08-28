@@ -2402,3 +2402,18 @@ body:not(.role-admin) .admin-only  { display: none !important; }
 .rot-24h-quando { font-size: .82rem; color: #7b6a45; flex: 1; }
 .rot-24h-btn { background: #b8862b; color: #fff; border: none; white-space: nowrap; }
 .rot-24h-btn:hover { background: #9c7024; }
+
+/* ---- Aviso não bloqueante do editor de rotações ---- */
+.rot-notice {
+    display: flex; align-items: center; gap: 9px;
+    margin: 0 0 12px; padding: 10px 13px; border-radius: 8px;
+    background: #fdf6e6; border: 1px solid #e6d3a3; border-left: 3px solid #b8862b;
+    color: #6b5629; font-size: .9rem;
+    opacity: 0; transform: translateY(-5px);
+    transition: opacity .2s ease, transform .2s ease;
+}
+.rot-notice.in { opacity: 1; transform: translateY(0); }
+.rot-notice-icon { font-size: 1rem; flex-shrink: 0; }
+@media (prefers-reduced-motion: reduce) {
+    .rot-notice { transition: none; }
+}

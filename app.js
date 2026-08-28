@@ -1898,31 +1898,7 @@ function renderRotations() {
         <div class="rot-controls-note">Semana atual: <strong>S${curIdx + 1}</strong></div>
     </div>`;
 
-    // Orphan ids render as blank seats in the grid below, so say plainly what is wrong.
-    const orfaos = getRotationOrphanIds();
-    if (orfaos.length) {
-        html += `<div class="rot-orphan-warn">
-            <strong>⚠ ${orfaos.length} ${orfaos.length === 1 ? 'lugar refere um médico que já não existe' : 'lugares referem médicos que já não existem'}</strong>
-            <p>Aparecem em branco na grelha e a rotação perde esses turnos — o Auto-Preencher entrega-os a quem estiver livre. Volte a escolher o médico nesses lugares.</p>
-            <p class="rot-orphan-ids">Referências perdidas: ${orfaos.map(esc).join(', ')}</p>
-        </div>`;
-    }
-
-    // Standing list of the 24h pairings already in the grid — the edit-time prompt only
-    // catches new ones, and a grid imported or built earlier is full of them.
-    const sem24h = getRotation24hMismatches();
-    if (sem24h.length) {
-        html += `<div class="rot-24h-warn">
-            <strong>${sem24h.length} ${sem24h.length === 1 ? 'médico faz 24 h na rotação sem ter a opção ativada' : 'médicos fazem 24 h na rotação sem terem a opção ativada'}</strong>
-            <p>A rotação põe estas pessoas de dia <b>e</b> de noite no mesmo dia. A escala respeita isso à mesma — a opção do perfil não a impede. Ative a opção para os números baterem certo, ou mude a rotação.</p>
-            <ul class="rot-24h-list">${sem24h.map(({ doc, quando }) => `
-                <li>
-                    <span class="rot-24h-nome">${esc(doc.name)}</span>
-                    <span class="rot-24h-quando">${quando.length} ${quando.length === 1 ? 'vez' : 'vezes'}: ${esc(quando.slice(0, 4).join(', '))}${quando.length > 4 ? '…' : ''}</span>
-                    ${canEdit ? `<button class="btn btn-sm rot-24h-btn" onclick="activar24h('${esc(doc.id)}')">Ativar 24 h</button>` : ''}
-                </li>`).join('')}</ul>
-        </div>`;
-    }
+    html += `<div id="rot-warnings"></div>`;
 
     html += `<div class="rot-grid-wrap"><table class="rot-grid"><thead><tr><th class="rot-rowhead">Dia / Turno</th>`;
     for (let w = 0; w < n; w++) html += `<th class="${w === curIdx ? 'current' : ''}">S${w + 1}</th>`;
@@ -1995,6 +1971,8 @@ function renderRotations() {
         renderSchedule();
     });
 
+    renderRotationWarnings();
+
     mount.querySelectorAll('.rot-cell').forEach(sel => {
         sel.addEventListener('change', () => {
             const key = sel.dataset.key;
@@ -2008,24 +1986,21 @@ function renderRotations() {
             cell[w][s] = sel.value || null;
             sel.setAttribute('style', doctorColorCss(sel.value)); // retint to match new pick
 
-            // Pairing someone across both halves of a day is a 24h stint. Auto-fill will
-            // honour it regardless, so ask here rather than letting the profile flag and
-            // the rotation quietly disagree.
+            // Pairing someone across both halves of a day is a 24h stint. Say so, but
+            // never interrupt: the rotation is kept either way, and the standing list
+            // below the controls carries the one-click fix.
             if (sel.value) {
                 const [dia, turno] = key.split('_');
                 const outro = turno === 'day' ? `${dia}_night` : `${dia}_day`;
                 const par = (rotationGrid.cells[outro] || [])[w] || [];
                 const doc = doctors.find(d => d.id === sel.value);
                 if (doc && !doc.can24h && par.includes(sel.value)) {
-                    if (confirm(
-                        `${doc.name} fica com dia + noite na mesma ${DAYS_FULL[+dia].toLowerCase()} (S${w + 1}) — 24 horas seguidas.\n\n` +
-                        `O perfil não tem "Pode fazer 24h" ativado. A escala vai na mesma respeitar a rotação.\n\n` +
-                        `Ativar "Pode fazer 24h" no perfil ${doc.name.split(' ')[0]}?`)) {
-                        doc.can24h = true;
-                    }
+                    showRotationNotice(
+                        `${doc.name.split(' ')[0]} fica com 24 h seguidas à ${DAYS_FULL[+dia].toLowerCase()} (S${w + 1}) — sem "Pode fazer 24h" no perfil.`);
                 }
             }
             save();
+            renderRotationWarnings();
             renderSchedule();
             renderHoursSummary();
         });
@@ -2056,6 +2031,25 @@ function getRotation24hMismatches() {
     return Object.values(porMedico);
 }
 
+// Non-blocking notice for the rotation editor. Deliberately not a confirm(): building
+// a rotation pairs people repeatedly, and a modal per edit would be in the way. The
+// standing list under the controls is where the situation gets resolved.
+let _rotNoticeTimer = null;
+function showRotationNotice(message) {
+    const mount = document.getElementById('rotations-list');
+    if (!mount) return;
+    document.querySelectorAll('.rot-notice').forEach(n => n.remove());
+    if (_rotNoticeTimer) { clearTimeout(_rotNoticeTimer); _rotNoticeTimer = null; }
+
+    const el = document.createElement('div');
+    el.className = 'rot-notice';
+    el.setAttribute('role', 'status');
+    el.innerHTML = `<span class="rot-notice-icon">⏱</span><span>${esc(message)}</span>`;
+    mount.prepend(el);
+    requestAnimationFrame(() => el.classList.add('in'));
+    _rotNoticeTimer = setTimeout(() => { el.classList.remove('in'); setTimeout(() => el.remove(), 250); }, 6000);
+}
+
 // One-click fix from the rotation editor, so the admin doesn't have to go hunting
 // through the doctor's card for a checkbox.
 window.activar24h = function (docId) {
@@ -2068,6 +2062,43 @@ window.activar24h = function (docId) {
     renderSchedule();
     renderHoursSummary();
 };
+
+// The two rotation warnings live in their own container so an edit can refresh them
+// without rebuilding the grid underneath the admin's cursor.
+function renderRotationWarnings() {
+    const box = document.getElementById('rot-warnings');
+    if (!box) return;
+    const canEdit = currentRole === 'admin';
+    let out = '';
+
+    // Orphan ids render as blank seats in the grid below, so say plainly what is wrong.
+    const orfaos = getRotationOrphanIds();
+    if (orfaos.length) {
+        out += `<div class="rot-orphan-warn">
+            <strong>⚠ ${orfaos.length} ${orfaos.length === 1 ? 'lugar refere um médico que já não existe' : 'lugares referem médicos que já não existem'}</strong>
+            <p>Aparecem em branco na grelha e a rotação perde esses turnos — o Auto-Preencher entrega-os a quem estiver livre. Volte a escolher o médico nesses lugares.</p>
+            <p class="rot-orphan-ids">Referências perdidas: ${orfaos.map(esc).join(', ')}</p>
+        </div>`;
+    }
+
+    // Standing list of the 24h pairings already in the grid — the edit-time prompt only
+    // catches new ones, and a grid imported or built earlier is full of them.
+    const sem24h = getRotation24hMismatches();
+    if (sem24h.length) {
+        out += `<div class="rot-24h-warn">
+            <strong>${sem24h.length} ${sem24h.length === 1 ? 'médico faz 24 h na rotação sem ter a opção ativada' : 'médicos fazem 24 h na rotação sem terem a opção ativada'}</strong>
+            <p>A rotação põe estas pessoas de dia <b>e</b> de noite no mesmo dia. A escala respeita isso à mesma — a opção do perfil não a impede. Ative a opção para os números baterem certo, ou mude a rotação.</p>
+            <ul class="rot-24h-list">${sem24h.map(({ doc, quando }) => `
+                <li>
+                    <span class="rot-24h-nome">${esc(doc.name)}</span>
+                    <span class="rot-24h-quando">${quando.length} ${quando.length === 1 ? 'vez' : 'vezes'}: ${esc(quando.slice(0, 4).join(', '))}${quando.length > 4 ? '…' : ''}</span>
+                    ${canEdit ? `<button class="btn btn-sm rot-24h-btn" onclick="activar24h('${esc(doc.id)}')">Ativar 24 h</button>` : ''}
+                </li>`).join('')}</ul>
+        </div>`;
+    }
+
+    box.innerHTML = out;
+}
 
 // Read-only view of a doctor's rotation assignments across the cycle (shown in their modal).
 function renderDoctorRotationView(docId) {
