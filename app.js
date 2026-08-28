@@ -1908,6 +1908,22 @@ function renderRotations() {
         </div>`;
     }
 
+    // Standing list of the 24h pairings already in the grid — the edit-time prompt only
+    // catches new ones, and a grid imported or built earlier is full of them.
+    const sem24h = getRotation24hMismatches();
+    if (sem24h.length) {
+        html += `<div class="rot-24h-warn">
+            <strong>${sem24h.length} ${sem24h.length === 1 ? 'médico faz 24 h na rotação sem ter a opção ativada' : 'médicos fazem 24 h na rotação sem terem a opção ativada'}</strong>
+            <p>A rotação põe estas pessoas de dia <b>e</b> de noite no mesmo dia. A escala respeita isso à mesma — a opção do perfil não a impede. Ative a opção para os números baterem certo, ou mude a rotação.</p>
+            <ul class="rot-24h-list">${sem24h.map(({ doc, quando }) => `
+                <li>
+                    <span class="rot-24h-nome">${esc(doc.name)}</span>
+                    <span class="rot-24h-quando">${quando.length} ${quando.length === 1 ? 'vez' : 'vezes'}: ${esc(quando.slice(0, 4).join(', '))}${quando.length > 4 ? '…' : ''}</span>
+                    ${canEdit ? `<button class="btn btn-sm rot-24h-btn" onclick="activar24h('${esc(doc.id)}')">Ativar 24 h</button>` : ''}
+                </li>`).join('')}</ul>
+        </div>`;
+    }
+
     html += `<div class="rot-grid-wrap"><table class="rot-grid"><thead><tr><th class="rot-rowhead">Dia / Turno</th>`;
     for (let w = 0; w < n; w++) html += `<th class="${w === curIdx ? 'current' : ''}">S${w + 1}</th>`;
     html += `</tr></thead><tbody>`;
@@ -1991,12 +2007,67 @@ function renderRotations() {
             }
             cell[w][s] = sel.value || null;
             sel.setAttribute('style', doctorColorCss(sel.value)); // retint to match new pick
+
+            // Pairing someone across both halves of a day is a 24h stint. Auto-fill will
+            // honour it regardless, so ask here rather than letting the profile flag and
+            // the rotation quietly disagree.
+            if (sel.value) {
+                const [dia, turno] = key.split('_');
+                const outro = turno === 'day' ? `${dia}_night` : `${dia}_day`;
+                const par = (rotationGrid.cells[outro] || [])[w] || [];
+                const doc = doctors.find(d => d.id === sel.value);
+                if (doc && !doc.can24h && par.includes(sel.value)) {
+                    if (confirm(
+                        `${doc.name} fica com dia + noite na mesma ${DAYS_FULL[+dia].toLowerCase()} (S${w + 1}) — 24 horas seguidas.\n\n` +
+                        `O perfil não tem "Pode fazer 24h" ativado. A escala vai na mesma respeitar a rotação.\n\n` +
+                        `Ativar "Pode fazer 24h" no perfil ${doc.name.split(' ')[0]}?`)) {
+                        doc.can24h = true;
+                    }
+                }
+            }
             save();
             renderSchedule();
             renderHoursSummary();
         });
     });
 }
+
+// Doctors the rotation puts on both the day and the night of the same weekday in the
+// same cycle week — a 24h stint. The auto-fill honours it (configuring both halves
+// reads as intent), so these shifts get worked whether or not the profile allows 24h.
+// That makes the "Pode fazer 24h" flag look decorative; list the mismatches instead.
+function getRotation24hMismatches() {
+    const porMedico = {};
+    const n = rotationGrid.cycleLength || 8;
+    for (let d = 0; d < 7; d++) {
+        const dia = rotationGrid.cells[`${d}_day`] || [];
+        const noite = rotationGrid.cells[`${d}_night`] || [];
+        for (let w = 0; w < n; w++) {
+            const deDia = (dia[w] || []).filter(Boolean);
+            (noite[w] || []).filter(Boolean).forEach(id => {
+                if (!deDia.includes(id)) return;
+                const doc = doctors.find(x => x.id === id);
+                if (!doc || doc.can24h) return;
+                (porMedico[id] = porMedico[id] || { doc, quando: [] })
+                    .quando.push(`${DAYS[d]} S${w + 1}`);
+            });
+        }
+    }
+    return Object.values(porMedico);
+}
+
+// One-click fix from the rotation editor, so the admin doesn't have to go hunting
+// through the doctor's card for a checkbox.
+window.activar24h = function (docId) {
+    const doc = doctors.find(d => d.id === docId);
+    if (!doc) return;
+    doc.can24h = true;
+    save();
+    renderRotations();
+    renderDoctors();
+    renderSchedule();
+    renderHoursSummary();
+};
 
 // Read-only view of a doctor's rotation assignments across the cycle (shown in their modal).
 function renderDoctorRotationView(docId) {
