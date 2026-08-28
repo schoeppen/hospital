@@ -1007,7 +1007,58 @@ document.querySelectorAll('.nav-btn').forEach(btn => {
 });
 
 // ---- Schedule Rendering ----
+// Doctor ids sitting in the rotation grid that no longer match any doctor record.
+// These are invisible in the Rotações editor (it renders names by lookup) but they
+// silently cost the rotation its slots: PASS 1 iterates real doctors, so an orphan
+// id is simply never placed and the shift gets backfilled by whoever is free.
+function getRotationOrphanIds() {
+    const known = new Set(doctors.map(d => d.id));
+    const orfaos = new Set();
+    Object.values(rotationGrid.cells || {}).forEach(weeks => {
+        (weeks || []).forEach(sem => (sem || []).forEach(id => {
+            if (id && !known.has(id)) orfaos.add(id);
+        }));
+    });
+    return [...orfaos];
+}
+
+// Which rotation week (S1..Sn) each week of the displayed month falls on. The admin
+// was counting weeks by hand from the anchor to work this out.
+function getMonthRotationWeeks() {
+    const vistos = new Map();
+    getMonthDates().forEach(d => {
+        const seg = getMonday(d);
+        const k = seg.getTime();
+        if (!vistos.has(k)) vistos.set(k, { seg, idx: rotationWeekIndex(seg) });
+    });
+    return [...vistos.values()].sort((a, b) => a.seg - b.seg);
+}
+
+function renderRotationWeekBar() {
+    const el = document.getElementById('rotation-week-bar');
+    if (!el) return;
+
+    const temRotacao = Object.values(rotationGrid.cells || {})
+        .some(weeks => (weeks || []).some(sem => (sem || []).length));
+    if (!temRotacao) { el.innerHTML = ''; return; }
+
+    const n = rotationGrid.cycleLength || 8;
+    const semanas = getMonthRotationWeeks().map(({ seg, idx }) => {
+        const dia = `${seg.getDate()}/${seg.getMonth() + 1}`;
+        return `<span class="rot-week-chip"><b>S${idx + 1}</b><span class="rot-week-date">${dia}</span></span>`;
+    }).join('');
+
+    const orfaos = getRotationOrphanIds();
+    const aviso = orfaos.length
+        ? `<div class="rot-week-warn">⚠ A grelha de rotação refere ${orfaos.length} ${orfaos.length === 1 ? 'médico que já não existe' : 'médicos que já não existem'}. Esses turnos não são preenchidos pela rotação — abra a tab Rotações para corrigir.</div>`
+        : '';
+
+    el.innerHTML =
+        `<div class="rot-week-row"><span class="rot-week-title">Rotação · ciclo de ${n} semanas</span>${semanas}</div>${aviso}`;
+}
+
 function renderSchedule() {
+    renderRotationWeekBar();
     if (scheduleViewMode === 'list') { renderScheduleList(); return; }
     renderScheduleCalendar();
 }
@@ -1883,6 +1934,16 @@ function renderRotations() {
         <div class="rot-controls-note">Semana atual: <strong>S${curIdx + 1}</strong></div>
     </div>`;
 
+    // Orphan ids render as blank seats in the grid below, so say plainly what is wrong.
+    const orfaos = getRotationOrphanIds();
+    if (orfaos.length) {
+        html += `<div class="rot-orphan-warn">
+            <strong>⚠ ${orfaos.length} ${orfaos.length === 1 ? 'lugar refere um médico que já não existe' : 'lugares referem médicos que já não existem'}</strong>
+            <p>Aparecem em branco na grelha e a rotação perde esses turnos — o Auto-Preencher entrega-os a quem estiver livre. Volte a escolher o médico nesses lugares.</p>
+            <p class="rot-orphan-ids">Referências perdidas: ${orfaos.map(esc).join(', ')}</p>
+        </div>`;
+    }
+
     html += `<div class="rot-grid-wrap"><table class="rot-grid"><thead><tr><th class="rot-rowhead">Dia / Turno</th>`;
     for (let w = 0; w < n; w++) html += `<th class="${w === curIdx ? 'current' : ''}">S${w + 1}</th>`;
     html += `</tr></thead><tbody>`;
@@ -2502,6 +2563,13 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
             });
         });
     });
+
+    // Orphan rotation ids cost the rotation its slots silently — report them first,
+    // because every other conflict below is a consequence, not the cause.
+    const orfaos = getRotationOrphanIds();
+    if (orfaos.length) {
+        conflitos.unshift(`Grelha de rotação: ${orfaos.length} ${orfaos.length === 1 ? 'médico que já não existe' : 'médicos que já não existem'} (${orfaos.slice(0, 3).join(', ')}${orfaos.length > 3 ? '…' : ''}) — esses turnos ficaram por preencher pela rotação.`);
+    }
 
     if (conflitos.length) {
         const max = 12;

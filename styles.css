@@ -2375,3 +2375,42 @@ body:not(.role-admin) .admin-only  { display: none !important; }
     border: 1px dashed var(--red) !important;
     font-weight: 700;
 }
+
+/* ---- Barra de semanas da rotação (vista de escalas) ---- */
+.rot-week-bar { margin: 0 0 10px; }
+.rot-week-row {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 8px 12px; background: var(--bg-soft, #f4f7fa);
+    border: 1px solid var(--border, #dfe6ee); border-radius: 8px;
+}
+.rot-week-title {
+    font-size: .8rem; font-weight: 600; color: var(--text-muted, #6b7d92);
+    text-transform: uppercase; letter-spacing: .04em; margin-right: 4px;
+}
+.rot-week-chip {
+    display: inline-flex; align-items: baseline; gap: 5px;
+    padding: 3px 9px; border-radius: 999px;
+    background: #fff; border: 1px solid var(--border, #dfe6ee);
+    font-size: .85rem;
+}
+.rot-week-chip b { color: #1f5f8b; font-weight: 700; }
+.rot-week-date { color: var(--text-muted, #7b8a9a); font-size: .78rem; }
+.rot-week-warn {
+    margin-top: 8px; padding: 9px 12px; border-radius: 8px;
+    background: #fbeee9; border: 1px solid #e8c4b6; color: #8c3a22;
+    font-size: .88rem;
+}
+
+/* ---- Aviso de médicos órfãos na tab Rotações ---- */
+.rot-orphan-warn {
+    margin: 0 0 14px; padding: 12px 14px; border-radius: 8px;
+    background: #fbeee9; border: 1px solid #e8c4b6; border-left: 3px solid #a8412a;
+}
+.rot-orphan-warn strong { color: #8c3a22; display: block; margin-bottom: 4px; }
+.rot-orphan-warn p { margin: 4px 0 0; font-size: .88rem; color: #6d4436; }
+.rot-orphan-ids { font-family: ui-monospace, Menlo, monospace; font-size: .8rem !important; }
+
+@media (max-width: 640px) {
+    .rot-week-row { padding: 7px 9px; gap: 6px; }
+    .rot-week-title { width: 100%; margin-bottom: 2px; }
+}
