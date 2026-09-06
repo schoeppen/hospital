@@ -1027,6 +1027,22 @@ function renderSchedule() {
     renderScheduleCalendar();
 }
 
+// Small S-number marker for the monthly views. Only on the Monday of each week (or
+// the first day shown, when the month starts mid-week), and only when a rotation
+// actually exists — otherwise it is noise on every cell.
+function rotationTag(date, primeiroDia) {
+    if (!rotationHasContent()) return '';
+    const dow = (date.getDay() + 6) % 7;
+    if (dow !== 0 && !primeiroDia) return '';
+    const idx = rotationWeekIndex(getMonday(date));
+    return `<span class="cal-week-tag" title="Semana ${idx + 1} do ciclo de rotação">S${idx + 1}</span>`;
+}
+
+function rotationHasContent() {
+    return Object.values(rotationGrid.cells || {})
+        .some(weeks => (weeks || []).some(sem => (sem || []).some(Boolean)));
+}
+
 function renderScheduleCalendar() {
     const grid = document.getElementById('schedule-grid');
     const dates = getMonthDates();
@@ -1064,7 +1080,7 @@ function renderScheduleCalendar() {
             : dayCounts.some(c => c < DOCTORS_PER_SHIFT) ? 'has-partial' : 'all-complete';
 
         html += `<div class="cal-day ${isWeekend ? 'cal-weekend' : ''} ${isToday ? 'cal-today' : ''} ${dayStatus}">
-            <div class="cal-day-num">${d.getDate()}</div>`;
+            <div class="cal-day-num">${d.getDate()}${rotationTag(d, d.getDate() === 1)}</div>`;
 
         SHIFTS.forEach(shift => {
             const assigned = getAssignedForShift(d, shift);
@@ -1246,6 +1262,7 @@ function renderScheduleList() {
         html += `<div class="day-row-label ${isWeekend ? 'weekend-header' : ''} ${isToday ? 'today-label' : ''}">
             <span class="day-num">${d.getDate()}</span>
             <span class="day-name">${DAYS[dow]}</span>
+            ${rotationTag(d, d.getDate() === 1)}
         </div>`;
 
         SHIFTS.forEach(shift => {
@@ -1895,27 +1912,6 @@ function intervaloSemana(segunda) {
         : `${segunda.getDate()} ${MESES_CURTOS[segunda.getMonth()]} – ${dom.getDate()} ${MESES_CURTOS[dom.getMonth()]}`;
 }
 
-// The anchor -> S-number mapping, spelled out. Without this the admin has to count
-// weeks from the reference by hand to know which column a given week uses.
-function buildRotationMapa(n) {
-    const ref = isoWeekToDate(rotationGrid.anchorWeek);
-    const hojeSeg = getMonday(new Date());
-    const total = Math.min(n, 12);
-    let out = '';
-    for (let i = 0; i < total; i++) {
-        const seg = new Date(ref);
-        seg.setDate(ref.getDate() + i * 7);
-        const eHoje = seg.getTime() === hojeSeg.getTime();
-        out += `<span class="rot-map-item${eHoje ? ' agora' : ''}">
-            <b>S${i + 1}</b><span>${intervaloSemana(seg)}</span></span>`;
-    }
-    if (n > total) out += `<span class="rot-map-more">…</span>`;
-    const fim = new Date(ref);
-    fim.setDate(ref.getDate() + n * 7);
-    out += `<span class="rot-map-loop">depois repete: ${intervaloSemana(fim)} volta à S1</span>`;
-    return out;
-}
-
 // The whole 8-week (N-week) rotation as one big editable grid, like the Excel.
 function renderRotations() {
     const mount = document.getElementById('rotations-list');
@@ -1933,11 +1929,6 @@ function renderRotations() {
             <select id="rot-anchor" ${canEdit ? '' : 'disabled'}>${buildAnchorWeekOptions(rotationGrid.anchorWeek)}</select>
         </div>
         <div class="rot-controls-note">Esta semana (${intervaloSemana(getMonday(new Date()))}): <strong>S${curIdx + 1}</strong></div>
-    </div>`;
-
-    html += `<div class="rot-explain">
-        <p><strong>Como funciona:</strong> a semana de referência é a <b>S1</b>. Cada semana seguinte avança uma coluna — S2, S3… — e ao fim de ${n} semanas volta à S1.</p>
-        <div class="rot-map">${buildRotationMapa(n)}</div>
     </div>`;
 
     html += `<div id="rot-warnings"></div>`;
@@ -2007,6 +1998,32 @@ function renderRotations() {
 
     document.getElementById('rot-anchor').addEventListener('change', e => {
         if (!e.target.value) return;
+        const anterior = rotationGrid.anchorWeek;
+        if (e.target.value === anterior) return;
+
+        // Moving the anchor slides the whole cycle: every week in every month starts
+        // using a different column. Easy to do by accident in a dropdown, and the
+        // damage is invisible until someone reads a schedule that is quietly shifted.
+        const de = isoWeekToDate(anterior), para = isoWeekToDate(e.target.value);
+        const desvio = Math.round((para - de) / (7 * 24 * 60 * 60 * 1000));
+        const n = rotationGrid.cycleLength || 8;
+        const passo = ((desvio % n) + n) % n;
+        const hojeSeg = getMonday(new Date());
+        const antes = ((Math.round((hojeSeg - de) / (7 * 24 * 60 * 60 * 1000)) % n) + n) % n;
+        const depois = ((Math.round((hojeSeg - para) / (7 * 24 * 60 * 60 * 1000)) % n) + n) % n;
+
+        const ok = confirm(
+            `Mudar a semana de referência muda TODA a escala da rotação.\n\n` +
+            `De:   ${intervaloSemana(de)} (${de.getFullYear()})\n` +
+            `Para: ${intervaloSemana(para)} (${para.getFullYear()})\n\n` +
+            (passo === 0
+                ? `O ciclo fica na mesma posição (${desvio} semanas é um múltiplo de ${n}).\n\n`
+                : `Todas as semanas passam a usar outra coluna do ciclo.\n` +
+                  `Esta semana (${intervaloSemana(hojeSeg)}): S${antes + 1} \u2192 S${depois + 1}\n\n`) +
+            `Tem a certeza?`);
+
+        if (!ok) { e.target.value = anterior; return; }
+
         rotationGrid.anchorWeek = e.target.value;
         save();
         renderRotations();
