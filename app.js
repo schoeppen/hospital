@@ -176,7 +176,15 @@ async function loadData() {
     if (cache && cache.pending) {
         const age = Date.now() - (cache.timestamp || 0);
         if (age > LOCAL_CACHE_MAX_AGE_MS) {
+            // Someone's unsaved work is being thrown away. Saying it only to the console
+            // meant a tarefeiro whose availability never reached the server had no way
+            // of knowing — it simply was not there any more.
             console.warn(`Alterações locais pendentes demasiado antigas (${Math.round(age/3600000)}h) — descartadas.`);
+            const horas = Math.round(age / 3600000);
+            setTimeout(() => alert(
+                `Havia alterações neste telemóvel que nunca chegaram ao servidor ` +
+                `(há ${horas} ${horas === 1 ? 'hora' : 'horas'}) e foram descartadas.\n\n` +
+                `Se marcou disponibilidade e ela não aparece, volte a marcá-la.`), 800);
             clearLocalCache();
             snapshotBase();
         } else {
@@ -440,6 +448,10 @@ async function performSave() {
         return;
     }
     _saveInFlight = true;
+    // Declared outside the try: the tail below reads it, and a `let` inside the block
+    // is out of scope there — which threw a ReferenceError on every save that had
+    // something to write, right after the upsert succeeded.
+    let lastError = null;
     try {
 
     // Only push what THIS client actually changed, three-way merged against the
@@ -456,7 +468,6 @@ async function performSave() {
         return;
     }
 
-    let lastError = null;
     for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt++) {
         // Re-read just before writing so we merge onto the freshest state
         const { data: current, error: readErr } = await db.from('app_data')
