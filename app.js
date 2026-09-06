@@ -1829,9 +1829,13 @@ function buildAnchorWeekOptions(selectedIso) {
         const label = `${mon.getDate()} ${MON[mon.getMonth()]} – ${sun.getDate()} ${MON[sun.getMonth()]} ${sun.getFullYear()}`;
         opts += `<option value="${iso}"${iso === selectedIso ? ' selected' : ''}>${label}</option>`;
     }
-    // Keep a stored anchor that falls outside the visible range selectable.
+    // Keep a stored anchor that falls outside the visible range selectable — and label
+    // it with real dates, not the raw "2026-W32", which tells the admin nothing.
     if (selectedIso && !hasSelected) {
-        opts = `<option value="${selectedIso}" selected>${selectedIso}</option>` + opts;
+        const mon = isoWeekToDate(selectedIso);
+        const sun = new Date(mon); sun.setDate(mon.getDate() + 6);
+        const label = `${mon.getDate()} ${MON[mon.getMonth()]} – ${sun.getDate()} ${MON[sun.getMonth()]} ${sun.getFullYear()}`;
+        opts = `<option value="${selectedIso}" selected>${label}</option>` + opts;
     }
     return opts;
 }
@@ -1879,6 +1883,39 @@ function doctorColorCss(id) {
     return h == null ? '' : `background-color:hsl(${h} 68% 90%);color:hsl(${h} 55% 26%)`;
 }
 
+const MESES_CURTOS = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez'];
+
+// "3 – 9 Ago" / "31 Ago – 6 Set" — dates the admin can check against a calendar.
+function intervaloSemana(segunda) {
+    const dom = new Date(segunda);
+    dom.setDate(segunda.getDate() + 6);
+    const mesIgual = segunda.getMonth() === dom.getMonth();
+    return mesIgual
+        ? `${segunda.getDate()} – ${dom.getDate()} ${MESES_CURTOS[dom.getMonth()]}`
+        : `${segunda.getDate()} ${MESES_CURTOS[segunda.getMonth()]} – ${dom.getDate()} ${MESES_CURTOS[dom.getMonth()]}`;
+}
+
+// The anchor -> S-number mapping, spelled out. Without this the admin has to count
+// weeks from the reference by hand to know which column a given week uses.
+function buildRotationMapa(n) {
+    const ref = isoWeekToDate(rotationGrid.anchorWeek);
+    const hojeSeg = getMonday(new Date());
+    const total = Math.min(n, 12);
+    let out = '';
+    for (let i = 0; i < total; i++) {
+        const seg = new Date(ref);
+        seg.setDate(ref.getDate() + i * 7);
+        const eHoje = seg.getTime() === hojeSeg.getTime();
+        out += `<span class="rot-map-item${eHoje ? ' agora' : ''}">
+            <b>S${i + 1}</b><span>${intervaloSemana(seg)}</span></span>`;
+    }
+    if (n > total) out += `<span class="rot-map-more">…</span>`;
+    const fim = new Date(ref);
+    fim.setDate(ref.getDate() + n * 7);
+    out += `<span class="rot-map-loop">depois repete: ${intervaloSemana(fim)} volta à S1</span>`;
+    return out;
+}
+
 // The whole 8-week (N-week) rotation as one big editable grid, like the Excel.
 function renderRotations() {
     const mount = document.getElementById('rotations-list');
@@ -1895,7 +1932,12 @@ function renderRotations() {
             <label for="rot-anchor">Semana de referência (= S1)</label>
             <select id="rot-anchor" ${canEdit ? '' : 'disabled'}>${buildAnchorWeekOptions(rotationGrid.anchorWeek)}</select>
         </div>
-        <div class="rot-controls-note">Semana atual: <strong>S${curIdx + 1}</strong></div>
+        <div class="rot-controls-note">Esta semana (${intervaloSemana(getMonday(new Date()))}): <strong>S${curIdx + 1}</strong></div>
+    </div>`;
+
+    html += `<div class="rot-explain">
+        <p><strong>Como funciona:</strong> a semana de referência é a <b>S1</b>. Cada semana seguinte avança uma coluna — S2, S3… — e ao fim de ${n} semanas volta à S1.</p>
+        <div class="rot-map">${buildRotationMapa(n)}</div>
     </div>`;
 
     html += `<div id="rot-warnings"></div>`;

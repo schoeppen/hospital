@@ -2417,3 +2417,26 @@ body:not(.role-admin) .admin-only  { display: none !important; }
 @media (prefers-reduced-motion: reduce) {
     .rot-notice { transition: none; }
 }
+
+/* ---- Explicação e mapa das semanas do ciclo (tab Rotações) ---- */
+.rot-explain {
+    margin: 0 0 14px; padding: 12px 14px; border-radius: 8px;
+    background: #f4f7fa; border: 1px solid #dfe6ee;
+}
+.rot-explain p { margin: 0 0 10px; font-size: .9rem; color: #45566a; }
+.rot-explain strong { color: #1f3d57; }
+.rot-map { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.rot-map-item {
+    display: inline-flex; align-items: baseline; gap: 6px;
+    padding: 4px 10px; border-radius: 999px;
+    background: #fff; border: 1px solid #dfe6ee; font-size: .84rem; color: #45566a;
+}
+.rot-map-item b { color: #1f5f8b; font-weight: 700; }
+.rot-map-item.agora { border-color: #1f5f8b; background: #eaf1f7; box-shadow: 0 0 0 1px #1f5f8b inset; }
+.rot-map-more { color: #8497a9; padding: 0 2px; }
+.rot-map-loop {
+    width: 100%; margin-top: 4px; font-size: .82rem; color: #6b7d92; font-style: italic;
+}
+@media (max-width: 640px) {
+    .rot-map-item { font-size: .8rem; padding: 3px 8px; }
+}
