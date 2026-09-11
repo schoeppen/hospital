@@ -333,6 +333,12 @@ const HISTORY_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
 const HISTORY_MAX_DAYS = 30;
 
 async function saveHistory() {
+    // Admins only. A snapshot carries the whole database — doctors, schedules,
+    // rotations — but a tarefeiro's copy of all that is whatever their session
+    // last loaded, so letting them write one seeds the backups with stale
+    // schedules. The delete below is admin-only in RLS anyway, so their inserts
+    // also skipped the 30-day cleanup and just piled up.
+    if (currentRole !== 'admin') return;
     const now = Date.now();
     if (now - lastHistorySaveTime < HISTORY_INTERVAL_MS) return;
     lastHistorySaveTime = now;
@@ -458,6 +464,9 @@ async function performSave() {
     // server's current value. A tarefeiro tapping one shift can no longer overwrite
     // the admin's schedule, and two people editing different things both survive.
     let dirtyKeys = Object.keys(DATA_KEYS).filter(localChanged);
+    // A read-only account cannot write anything: RLS rejects it server-side, and
+    // without this the client would retry the doomed write every 15 s forever.
+    if (currentRole === 'read') dirtyKeys = [];
     // A tarefeiro may only write their own availability. RLS enforces this too, but
     // the upsert is a single statement: including any other key would make the whole
     // batch fail, silently losing the one change they're allowed to make.
@@ -553,6 +562,14 @@ function dateKey(d) {
     return `${year}-${month}-${day}`;
 }
 
+// CUIDADO: toISOString() converte para UTC, e `date` é uma segunda-feira à
+// meia-noite local. Durante a hora de verão (UTC+1) isto devolve a data do
+// DOMINGO anterior — em 2026, 30 das 60 semanas testadas. É inofensivo hoje
+// porque a chave é sempre construída por esta função e nunca lida de volta:
+// não há colisões e todos os acessos são consistentes entre si.
+// NÃO "corrigir" sem migrar os dados: mudar a fórmula re-chaveia toda a escala
+// já guardada e ela passa a aparecer vazia. E nunca fazer parseDateKey() de uma
+// chave de semana — daria um dia a menos durante meio ano.
 function weekKey(date) {
     return date.toISOString().slice(0, 10);
 }
@@ -889,7 +906,7 @@ async function renderUsersAdmin() {
         }
 
         html += `<tr class="${isSelf ? 'row-self' : ''}">
-            <td><strong>${p.name || '—'}</strong></td>
+            <td><strong>${esc(p.name || '—')}</strong></td>
             <td>${esc(p.email || "—")}</td>
             <td>
                 <select class="role-select" data-uid="${p.id}" ${isSelf ? 'disabled' : ''}>
@@ -1513,6 +1530,10 @@ function isRuleBasedShift(doc, date, shift) {
 
     for (const rule of rules) {
         if (rule.dayOfWeek !== dow) continue;
+        // A 24h rule the profile does not allow is ignored by the auto-fill, so it must
+        // not count as a fixed slot here either — otherwise PASS 1 places the day half
+        // of a rule that was refused, and it lands outside the extra-hours limit.
+        if (rule.shiftType === '24h' && !doc.can24h) continue;
         const shiftMatch = rule.shiftType === '24h' || rule.shiftType === shift;
         if (!shiftMatch) continue;
 
@@ -1524,9 +1545,13 @@ function isRuleBasedShift(doc, date, shift) {
             if ((dt.getDay() + 6) % 7 !== dow) continue;
             if (dt >= date) break;
             if (rule.shiftType === '24h') {
+                // Count the occurrence if EITHER half landed. Requiring both meant a 24h
+                // whose night was refused (slot full, next-day conflict) left the rule
+                // permanently unspent, so every remaining weekday of the month counted as
+                // rule-based — i.e. as fixed hours, outside the extra-hours limit.
                 const dayAssigned = getAssignedForShift(dt, 'day').includes(doc.id);
                 const nightAssigned = getAssignedForShift(dt, 'night').includes(doc.id);
-                if (dayAssigned && nightAssigned) countBefore++;
+                if (dayAssigned || nightAssigned) countBefore++;
             } else {
                 if (getAssignedForShift(dt, shift).includes(doc.id)) countBefore++;
             }
@@ -2361,6 +2386,7 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
     // =========================================
     // PASS 2.5: Monthly day-of-week rules
     // =========================================
+    const regras24hInvalidas = new Set();
     doctors.forEach(doc => {
         const rules = getDoctorRules(doc);
         dates.forEach(date => {
@@ -2371,6 +2397,18 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
 
             const has24hRule = applicable.some(r => r.shiftType === '24h');
             applicable.forEach(rule => {
+                // A 24h rule on someone who cannot do 24h could never be satisfied: the
+                // night half is always refused, the counter never advances, and the rule
+                // re-fired on every matching weekday — booking a whole month of shifts as
+                // "fixed", which exempted them from the extra-hours limit entirely.
+                if (rule.shiftType === '24h' && !doc.can24h) {
+                    if (!regras24hInvalidas.has(doc.id)) {
+                        regras24hInvalidas.add(doc.id);
+                        conflitos.push({ motivo: 'regra de 24h sem "pode 24h"', texto:
+                            `${nomeCurto(doc.id)}: tem uma regra de turno de 24 h mas o perfil não permite 24 h — regra ignorada.` });
+                    }
+                    return;
+                }
                 const exclude24h = rule.shiftType !== '24h' && has24hRule;
                 const assigned = countMonthlyDowAssignments(
                     doc.id, date.getFullYear(), date.getMonth(), dow, rule.shiftType, exclude24h);
@@ -2707,32 +2745,17 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
         conflitos.unshift({ motivo: 'médico já não existe', texto: `Grelha de rotação: ${orfaos.slice(0, 3).join(', ')}${orfaos.length > 3 ? '…' : ''} — a grelha pede quem já não está na lista de médicos.` });
     }
 
+    // O relatório no ecrã foi removido a pedido: o Auto-Preencher não mostra nada.
+    // A recolha fica, escrita na consola, porque já foi duas vezes a única forma de
+    // perceber por que razão a rotação não entrou numa escala. Não é visível ao
+    // utilizador; para reactivar um aviso, basta voltar a pintar `grupos`.
     if (conflitos.length) {
-        // Grouped by cause: a month that was already filled produces dozens of identical
-        // "turno cheio" lines, and a raw truncated list buried the one thing the admin
-        // needed to know — why the rotation could not get in.
         const porMotivo = {};
         conflitos.forEach(c => (porMotivo[c.motivo] = porMotivo[c.motivo] || []).push(c.texto));
         const grupos = Object.entries(porMotivo).sort((a, b) => b[1].length - a[1].length);
-
-        const SUGESTAO = {
-            'turno cheio': 'já havia gente nesses turnos; Limpar Mês e preencher de novo dá a vez à rotação',
-            'médico já não existe': 'corrija esses lugares na tab Rotações',
-            'bloqueado': 'a grelha semanal e a rotação pedem coisas diferentes',
-            'dia+noite': 'ative "Pode fazer 24h" no perfil, ou mude a rotação',
-        };
-
-        const resumo = grupos.map(([motivo, itens]) => {
-            const dica = SUGESTAO[motivo] ? ` — ${SUGESTAO[motivo]}` : '';
-            return `\u2022 ${itens.length} \u00d7 ${motivo}${dica}`;
-        }).join('\n');
-
-        const max = 6;
-        const detalhe = grupos.flatMap(([, itens]) => itens).slice(0, max)
-            .map(t => '   \u2013 ' + t).join('\n');
-        const resto = conflitos.length > max ? `\n   \u2026 e mais ${conflitos.length - max}` : '';
-
-        alert(`Escala preenchida, com ${conflitos.length} ${conflitos.length === 1 ? 'lugar do horário/rotação por resolver' : 'lugares do horário/rotação por resolver'}:\n\n${resumo}\n\nExemplos:\n${detalhe}${resto}`);
+        console.info(`[escala] ${conflitos.length} lugares do horário/rotação por resolver:`,
+            Object.fromEntries(grupos.map(([m, i]) => [m, i.length])));
+        console.info('[escala] detalhe:', conflitos.map(c => c.texto));
     }
 });
 
@@ -2866,21 +2889,28 @@ document.getElementById('export-rules-btn').addEventListener('click', () => {
     L('Gerado em: ' + new Date().toLocaleString('pt-PT'));
     L('');
     L('Cada turno requer 2 médicos | Diurno 08:30–20:30 | Noturno 20:30–08:30 (12h cada)');
-    L('Médicos sem limite de horas extra definido nunca recebem turnos flex.');
+    L('Limite de horas extra vazio ou 0 = o médico não recebe turnos flex.');
 
     H('PRIORIDADES (ordem de atribuição)');
     L('1. Horário Fixo        — atribuído primeiro; indisponibilidade/férias substitui o fixo.');
-    L('2. Rotações            — pares A/B alternam semana a semana; sujeito a regras de descanso.');
+    L('2. Rotações            — grelha de N semanas (ex.: 8). A semana de referência é a S1 e o');
+    L('                         ciclo avança uma coluna por semana. Conta como horário fixo.');
     L('3. Regras mensais      — "X turnos de Y tipo às Z-feiras"; preenche até atingir o número.');
     L('4. Reposição           — indisponibilidade (não-férias) em dia fixo gera débito a repor no mês.');
     L('5. Tarefeiros          — NÃO entram no auto-preenchimento. Propõem-se aos turnos com falta');
     L('                         de pessoal e só entram na escala quando o admin aceita o pedido.');
     L('6. Turnos 24h          — só médicos com flag "Pode 24h"; só se ambos os slots (D+N) estiverem vazios.');
+    L('                         Excepção: se a rotação ou o horário fixo puserem a mesma pessoa de dia');
+    L('                         E de noite no mesmo dia, isso é respeitado como intenção — a app avisa');
+    L('                         na tab Rotações quem está nessa situação sem a flag.');
     L('   Fim-de-semana       — preferência reforçada por 24h ao Sáb/Dom (médicos preferem 24h a 12+12).');
     L('7. Flex (extra)        — preenche restantes: 1º um por slot vazio, 2º completa o 2º, 3º redistribui.');
 
     H('REGRAS SEMPRE APLICADAS');
     L('Descanso pós-noturno   — após noturno, o médico descansa o dia seguinte inteiro (D+N).');
+    L('                         Ganha ao horário configurado: se a rotação ou o horário fixo pedirem');
+    L('                         um turno sem descanso, o médico NÃO é escalado e o caso vai ao aviso');
+    L('                         do fim do Auto-Preencher. O turno fica aberto para um colega descansado.');
     L('Conflito seguinte      — não atribui noturno se o médico já tiver turno no dia seguinte.');
     L('Limite horas extra     — nunca excede o limite mensal; turnos fixos/rotação não contam.');
     L('Fim-de-semana          — nenhum médico trabalha sábado E domingo na mesma semana.');
@@ -2890,6 +2920,8 @@ document.getElementById('export-rules-btn').addEventListener('click', () => {
     L('Indisponível — bloqueia o turno; sobrepõe horário fixo; gera débito de reposição.');
     L('Férias       — bloqueia o turno; sobrepõe horário fixo; NÃO gera débito.');
     L('Bloqueado    — definido semanalmente; o médico nunca faz aquele turno naquele dia.');
+    L('               Ganha a tudo, incluindo à rotação. Em modo "Fixo Mensal" os bloqueios');
+    L('               semanais deixam de ser lidos — marcar a indisponibilidade nos próprios dias.');
 
     H('DESEMPATE (Passagem Flex)');
     L('1º disponibilidade explícita marcada  2º menos horas extra acumuladas no mês.');
@@ -3035,7 +3067,7 @@ function renderDoctors() {
             </div>
             <div class="info-row">
                 ${doc.phone ? `<span>📞 ${doc.phone}</span>` : ''}
-                ${doc.email ? `<span>✉ ${doc.email}</span>` : ''}
+                ${doc.email ? `<span>✉ ${esc(doc.email)}</span>` : ''}
             </div>
             ${hoursHtml}
             ${fixedHtml}
@@ -3807,6 +3839,34 @@ function renderTarefeiroVagas(terc) {
 }
 
 // Toggle one vaga for the logged-in tarefeiro and save immediately.
+// Action log for a tarefeiro, kept inside their own record. Two reasons it lives
+// there rather than in a table of its own: RLS already lets a tarefeiro write
+// chbv_terceiros and nothing else, so they can record their own actions without a
+// new policy; and mergeById merges per record, so two people acting at once don't
+// overwrite each other's entries.
+const TERC_LOG_MAX = 200;
+
+function logTerceiroAcao(terc, tipo, dk, shift, porQuem) {
+    if (!terc) return;
+    if (!Array.isArray(terc.log)) terc.log = [];
+    terc.log.push({
+        ts: new Date().toISOString(),
+        tipo,                                   // pedido | retirado | aceite | recusado
+        dk,
+        shift,
+        por: porQuem || (currentUser && currentUser.email) || null,
+    });
+    // Keep it bounded: this rides along in every save of chbv_terceiros.
+    if (terc.log.length > TERC_LOG_MAX) terc.log = terc.log.slice(-TERC_LOG_MAX);
+}
+
+const ACAO_LABEL = {
+    pedido:   { txt: 'ofereceu-se',        cls: 'ac-pedido' },
+    retirado: { txt: 'retirou a oferta',   cls: 'ac-retirado' },
+    aceite:   { txt: 'aceite pelo admin',  cls: 'ac-aceite' },
+    recusado: { txt: 'recusado pelo admin', cls: 'ac-recusado' },
+};
+
 window.toggleVaga = function(dk, shift) {
     const t = terceiros.find(x => x.id === currentTerceiroId);
     if (!t) return;
@@ -3843,9 +3903,11 @@ window.toggleVaga = function(dk, shift) {
     if (removing) {
         delete avail[dk][shift];
         if (!avail[dk].day && !avail[dk].night) delete avail[dk];
+        logTerceiroAcao(t, 'retirado', dk, shift);
     } else {
         if (!avail[dk]) avail[dk] = {};
         avail[dk][shift] = true;
+        logTerceiroAcao(t, 'pedido', dk, shift);
     }
     save();
     renderTerceiros();
@@ -3889,6 +3951,45 @@ function pendingRequestsForShift(date, shift) {
         const a = t.monthlyAvailability || {};
         return a[dk] && a[dk][shift] && !assigned.includes(t.id);
     });
+}
+
+// Every logged action across all tarefeiros, newest first. The admin could see who
+// was waiting, but not what had already happened — who offered what and when, and
+// who accepted or refused it.
+function renderTerceiroHistoryPanel() {
+    const eventos = [];
+    terceiros.forEach(t => (t.log || []).forEach(e => eventos.push({ ...e, terc: t })));
+    if (eventos.length === 0) return '';
+    eventos.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
+
+    const MAX = 40;
+    const mostrar = eventos.slice(0, MAX);
+    const linhas = mostrar.map(e => {
+        const meta = ACAO_LABEL[e.tipo] || { txt: e.tipo, cls: '' };
+        const quando = new Date(e.ts);
+        const dataAcao = isNaN(quando.getTime()) ? '' :
+            `${String(quando.getDate()).padStart(2, '0')}/${String(quando.getMonth() + 1).padStart(2, '0')} ${String(quando.getHours()).padStart(2, '0')}:${String(quando.getMinutes()).padStart(2, '0')}`;
+        const turnoDt = new Date(e.dk + 'T00:00:00');
+        const turno = isNaN(turnoDt.getTime()) ? esc(e.dk) :
+            `${DAYS[(turnoDt.getDay() + 6) % 7]} ${turnoDt.getDate()} ${MONTH_NAMES[turnoDt.getMonth()].slice(0, 3)}`;
+        const porQuem = (e.tipo === 'aceite' || e.tipo === 'recusado') && e.por
+            ? `<span class="hist-por">por ${esc(e.por)}</span>` : '';
+        return `<div class="hist-row">
+            <span class="hist-quando">${dataAcao}</span>
+            <span class="hist-nome">${esc(e.terc.name)}</span>
+            <span class="hist-acao ${meta.cls}">${meta.txt}</span>
+            <span class="hist-turno">${turno} · ${e.shift === 'night' ? '🌙' : '☀️'}</span>
+            ${porQuem}
+        </div>`;
+    }).join('');
+
+    const resto = eventos.length > MAX
+        ? `<p class="hist-resto">a mostrar as ${MAX} mais recentes de ${eventos.length}</p>` : '';
+
+    return `<details class="hist-panel">
+        <summary><span>Histórico de pedidos e confirmações</span><span class="hist-count">${eventos.length}</span></summary>
+        <div class="hist-body">${linhas}${resto}</div>
+    </details>`;
 }
 
 function renderPendingRequestsPanel() {
@@ -3936,6 +4037,7 @@ window.acceptTerceiroRequest = function(tercId, dk, shift) {
         return;
     }
     setAssignedForShift(date, shift, [...assigned, tercId]);
+    logTerceiroAcao(t, 'aceite', dk, shift);
     save();
     renderTerceiros();
     renderSchedule();
@@ -3948,6 +4050,7 @@ window.declineTerceiroRequest = function(tercId, dk, shift) {
     if (!t || !t.monthlyAvailability || !t.monthlyAvailability[dk]) return;
     delete t.monthlyAvailability[dk][shift];
     if (!t.monthlyAvailability[dk].day && !t.monthlyAvailability[dk].night) delete t.monthlyAvailability[dk];
+    logTerceiroAcao(t, 'recusado', dk, shift);
     save();
     renderTerceiros();
     renderSchedule();
@@ -3996,7 +4099,11 @@ function renderTerceiros() {
     const daysInMonth = new Date(curYear, curMonth + 1, 0).getDate();
 
     // Admins see the pending-request queue above the cards.
-    let html = isTarefeiro ? '' : renderPendingRequestsPanel();
+    // Admin only: a read-only account was getting the panel with working Accept and
+    // Decline buttons. The click changed the schedule in memory and never saved, so
+    // they saw a confirmation that vanished on reload.
+    const ehAdmin = currentRole === 'admin';
+    let html = ehAdmin ? (renderPendingRequestsPanel() + renderTerceiroHistoryPanel()) : '';
     cards.forEach(t => {
         // A tarefeiro gets the purpose-built panel only — their own name, phone and
         // specialty are noise to them, and the greeting lives in its header.
@@ -4233,6 +4340,27 @@ function getTheoreticalFixedHours(docId, year, month) {
     // Remember which (date, shift) slots were already counted, so a rule that lands
     // on a slot the doctor is already fixed for isn't added a second time.
     const counted = new Set();
+
+    // "Previsto" has to apply the same hard rules the placement applies, or it charges
+    // hours that can never be worked. A rotation with the same person on Saturday AND
+    // Sunday, for instance, showed a deficit of a full weekend every month, for ever,
+    // with nothing anyone could do about it — the weekend rule refuses the second day.
+    // Capacity is deliberately NOT applied here: whether a slot is already full depends
+    // on everyone else, so it is a scheduling outcome, not something to predict.
+    const aceite = (dt, sh) => counted.has(dateKey(dt) + '_' + sh);
+    const outroDiaDoFimDeSemana = (dt) => {
+        const dow = (dt.getDay() + 6) % 7;
+        if (dow !== 5 && dow !== 6) return false;
+        const outro = new Date(dt);
+        outro.setDate(dt.getDate() + (dow === 5 ? 1 : -1));
+        return aceite(outro, 'day') || aceite(outro, 'night');
+    };
+    const fezNoiteAnterior = (dt) => {
+        const ontem = new Date(dt);
+        ontem.setDate(dt.getDate() - 1);
+        return aceite(ontem, 'night');
+    };
+
     for (let day = 1; day <= daysInMonth; day++) {
         const date = new Date(year, month, day);
         SHIFTS.forEach(shift => {
@@ -4248,7 +4376,18 @@ function getTheoreticalFixedHours(docId, year, month) {
             } else {
                 isFixedSlot = !!(doc.fixedSchedule && doc.fixedSchedule[`${dayIdx}_${shift}`]) || inRotation;
             }
-            if (isFixedSlot) { hours += HOURS_PER_SHIFT; counted.add(dk + '_' + shift); }
+            if (!isFixedSlot) return;
+
+            // Same refusals PASS 1 makes, in the same order (dates ascending, day then
+            // night), so what is charged here is what can actually be placed.
+            if (isBlockedOnDate(doc, date, shift)) return;
+            if (fezNoiteAnterior(date)) return;
+            if (outroDiaDoFimDeSemana(date)) return;
+            if (shift === 'night' && aceite(date, 'day') && !doc.can24h
+                && !isDeliberate24hDate(doc, date)) return;
+
+            hours += HOURS_PER_SHIFT;
+            counted.add(dk + '_' + shift);
         });
     }
 
@@ -4256,6 +4395,9 @@ function getTheoreticalFixedHours(docId, year, month) {
     // and subtract those that fall on vacation/unavailability
     const rules = getDoctorRules(doc);
     rules.forEach(rule => {
+        // Same reason as isRuleBasedShift: an unusable 24h rule is not worked, so it
+        // must not be charged as expected hours.
+        if (rule.shiftType === '24h' && !doc.can24h) return;
         const shifts = rule.shiftType === '24h' ? ['day', 'night'] : [rule.shiftType];
         // Collect all dates in month matching this rule's day-of-week
         const matchingDates = [];

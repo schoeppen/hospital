@@ -2427,3 +2427,48 @@ body:not(.role-admin) .admin-only  { display: none !important; }
 }
 .cal-weekend .cal-week-tag { background: #e4e9f0; }
 .day-row-label .cal-week-tag { margin-left: 4px; }
+
+/* ---- Histórico de acções dos tarefeiros (admin) ---- */
+.hist-panel {
+    margin: 0 0 16px; border: 1px solid var(--border, #dfe6ee);
+    border-radius: 10px; background: #fff; overflow: hidden;
+}
+.hist-panel > summary {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 11px 14px; cursor: pointer; font-weight: 600; font-size: .92rem;
+    color: #1f3d57; list-style: none;
+}
+.hist-panel > summary::-webkit-details-marker { display: none; }
+.hist-panel > summary::before {
+    content: '▸'; color: #8497a9; font-size: .8rem; transition: transform .15s ease;
+}
+.hist-panel[open] > summary::before { transform: rotate(90deg); }
+.hist-panel > summary > span:first-of-type { flex: 1; }
+.hist-count {
+    background: #eaf1f7; color: #1f5f8b; border-radius: 999px;
+    padding: 1px 9px; font-size: .78rem; font-weight: 700;
+}
+.hist-body { border-top: 1px solid var(--border, #dfe6ee); max-height: 340px; overflow-y: auto; }
+.hist-row {
+    display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
+    padding: 8px 14px; border-bottom: 1px solid #f0f4f8; font-size: .86rem;
+}
+.hist-row:last-child { border-bottom: none; }
+.hist-quando {
+    font-family: ui-monospace, Menlo, monospace; font-size: .78rem;
+    color: #8497a9; white-space: nowrap;
+}
+.hist-nome { font-weight: 600; color: #1f3d57; }
+.hist-acao { padding: 1px 8px; border-radius: 999px; font-size: .78rem; font-weight: 600; }
+.ac-pedido   { background: #eaf1f7; color: #1f5f8b; }
+.ac-retirado { background: #f0f2f5; color: #6b7d92; }
+.ac-aceite   { background: #e9f2ec; color: #2f6b4f; }
+.ac-recusado { background: #fbeee9; color: #a8412a; }
+.hist-turno { color: #45566a; }
+.hist-por { color: #8497a9; font-size: .78rem; }
+.hist-resto { margin: 0; padding: 9px 14px; font-size: .8rem; color: #8497a9; font-style: italic; }
+@media (max-width: 640px) {
+    .hist-row { gap: 6px; padding: 8px 11px; }
+    .hist-quando { width: 100%; }
+}
+
