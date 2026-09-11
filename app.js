@@ -1739,10 +1739,10 @@ function openAssignModal(dk, shift) {
         const dow = (date.getDay() + 6) % 7;
         const docRules = getDoctorRules(doc);
         const applicableRules = docRules.filter(r => r.dayOfWeek === dow);
-        const modalHas24hRule = applicableRules.some(r => r.shiftType === '24h');
         applicableRules.forEach(rule => {
-            const exclude24h = rule.shiftType !== '24h' && modalHas24hRule;
-            const assigned = countMonthlyDowAssignments(doc.id, date.getFullYear(), date.getMonth(), dow, rule.shiftType, exclude24h);
+            // Same counting criterion as PASS 2.5 and isRuleBasedShift, or this badge
+            // reports a different progress than the algorithm actually uses.
+            const assigned = countMonthlyDowAssignments(doc.id, date.getFullYear(), date.getMonth(), dow, rule.shiftType, false);
             const shiftMatch = rule.shiftType === '24h' || rule.shiftType === shift;
             if (shiftMatch) {
                 const label = `${DAYS[dow]} ${rule.shiftType === '24h' ? '24h' : (rule.shiftType === 'day' ? 'D' : 'N')}`;
@@ -1755,8 +1755,14 @@ function openAssignModal(dk, shift) {
         hoursHtml = `<span class="hours-remaining">${currentExtra}/${extraLimit}h extra</span>`;
 
         const canAssign = !blocked && !monthlyUnavail && !overLimit && (available || isRotationDoc);
+        const motivo = blocked ? 'está bloqueado neste turno'
+            : monthlyUnavail ? (isOnVacation(doc, date, shift) ? 'está de férias' : 'está indisponível')
+            : needsRestAfterNight(doc.id, date, shift) ? 'fez a noite anterior e precisa de descanso'
+            : overLimit ? 'fica acima do limite de horas extra'
+            : 'não marcou disponibilidade para este turno';
         html += `<li class="assign-item ${!canAssign ? 'unavailable' : ''}"
-                     data-doc-id="${doc.id}" data-available="true">
+                     data-doc-id="${doc.id}" data-available="${canAssign}"
+                     data-motivo="${esc(motivo)}">
             <span>${esc(doc.name)}${hoursHtml}</span>
             <span>${badges.join(' ')}</span>
         </li>`;
@@ -1776,8 +1782,11 @@ function openAssignModal(dk, shift) {
             if (isAvail) badges.push('<span class="avail-badge yes">Propôs-se</span>');
             else badges.push('<span class="avail-badge no">Sem disponibilidade</span>');
             if (resting) badges.push('<span class="avail-badge no">A descansar (noite anterior)</span>');
+            const motivoT = resting ? 'fez a noite anterior e precisa de descanso'
+                : !isAvail ? 'não se propôs para este turno' : '';
             html += `<li class="assign-item ${!canAssign ? 'unavailable' : ''}"
-                         data-doc-id="${t.id}" data-available="true">
+                         data-doc-id="${t.id}" data-available="${canAssign}"
+                         data-motivo="${esc(motivoT)}">
                 <span>${esc(t.name)}</span>
                 <span>${badges.join(' ')}</span>
             </li>`;
@@ -1791,11 +1800,25 @@ function openAssignModal(dk, shift) {
 
     content.querySelectorAll('.assign-item').forEach(item => {
         item.addEventListener('click', () => {
-            if (item.dataset.available === 'false') return;
             const docId = item.dataset.docId;
-            if (!sched[sk]) sched[sk] = [];
-            if (sched[sk].length >= DOCTORS_PER_SHIFT) return;
-            sched[sk].push(docId);
+
+            // The row is greyed out for a reason — say which, and let the admin decide.
+            // data-available used to be hardcoded "true", so the guard below never fired
+            // and a blocked or resting doctor was assigned with one silent click.
+            if (item.dataset.available === 'false') {
+                const motivo = item.dataset.motivo || 'não está disponível para este turno';
+                const nome = (doctors.find(d => d.id === docId) || terceiros.find(t => t.id === docId) || {}).name || '';
+                if (!confirm(`${nome}: ${motivo}.\n\nEscalar mesmo assim?`)) return;
+            }
+
+            // Create the week here, not when the modal opens. Opening it must stay a
+            // read-only act (an invented empty week dirties chbv_schedules), but the
+            // read-only accessor returns a FROZEN object, so writing to it did nothing
+            // at all: in a week with no shifts yet, clicking a doctor silently failed.
+            const alvo = getOrCreateScheduleForDate(date);
+            if (!alvo[sk]) alvo[sk] = [];
+            if (alvo[sk].length >= DOCTORS_PER_SHIFT) return;
+            alvo[sk].push(docId);
             save();
             renderSchedule();
             document.getElementById('assign-modal').classList.remove('open');
@@ -1839,7 +1862,11 @@ function getRotationDoctorsForShift(dayIdx, shift, weekStartDate) {
     const cell = rotationGrid.cells[`${dayIdx}_${shift}`];
     if (!cell || !cell.length) return [];
     const idx = rotationWeekIndex(weekStartDate);
-    return (cell[idx] || []).filter(Boolean);
+    // Cap at the number of seats the editor draws (readCell slices the same way).
+    // An imported or restored grid can hold more names than there are seats, and the
+    // extras were invisible in the Rotações tab yet still requested here: they were
+    // dropped for capacity and charged expected hours for a doctor nobody could see.
+    return (cell[idx] || []).filter(Boolean).slice(0, DOCTORS_PER_SHIFT);
 }
 
 // Is this doctor part of the rotation grid at all (any cell, any week)?
@@ -2395,7 +2422,6 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
                 .filter(r => r.dayOfWeek === dow)
                 .sort((a, b) => (a.shiftType === '24h' ? 0 : 1) - (b.shiftType === '24h' ? 0 : 1));
 
-            const has24hRule = applicable.some(r => r.shiftType === '24h');
             applicable.forEach(rule => {
                 // A 24h rule on someone who cannot do 24h could never be satisfied: the
                 // night half is always refused, the counter never advances, and the rule
@@ -2409,9 +2435,12 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
                     }
                     return;
                 }
-                const exclude24h = rule.shiftType !== '24h' && has24hRule;
+                // Count with the SAME criterion isRuleBasedShift uses to classify, or the
+                // two disagree: excluding the 24h occurrence here made PASS 2.5 place an
+                // extra night that isRuleBasedShift then judged non-rule-based, booking it
+                // as EXTRA and pushing the doctor past a limit this pass never checks.
                 const assigned = countMonthlyDowAssignments(
-                    doc.id, date.getFullYear(), date.getMonth(), dow, rule.shiftType, exclude24h);
+                    doc.id, date.getFullYear(), date.getMonth(), dow, rule.shiftType, false);
                 if (assigned >= rule.count) return;
 
                 const shifts = rule.shiftType === '24h' ? ['day', 'night'] : [rule.shiftType];
