@@ -691,8 +691,12 @@ function getMonthlyTotalHours(docId, year, month) {
 
 // ---- Auto refresh ----
 // Clients used to read the server only once, at sign-in, so a phone left open all day
-// showed hours-old data. Pull (merged) updates periodically and when the tab regains focus.
-const AUTO_REFRESH_MS = 60 * 1000;
+// showed hours-old data. Pull (merged) updates periodically, when the window regains
+// focus, and whenever someone opens a tab.
+// The guard in refreshFromServer skips a pull while a save is queued or retrying: the
+// merge would fold the unsaved change into the base and it would stop counting as
+// dirty, losing it. Do not relax that without changing how the base is snapshotted.
+const AUTO_REFRESH_MS = 25 * 1000;
 let _refreshTimer = null;
 
 function startAutoRefresh() {
@@ -1028,6 +1032,10 @@ document.querySelectorAll('.nav-btn').forEach(btn => {
         document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
         document.getElementById(`${btn.dataset.view}-view`).classList.add('active');
         if (btn.dataset.view === 'users') renderUsersAdmin();
+        // Pull before showing. Opening a tab is exactly when someone wants to see what
+        // changed, and waiting for the next poll meant a tarefeiro's request could sit
+        // invisible for up to a minute — long enough to look broken.
+        if (currentUser) refreshFromServer();
         const isSchedule = btn.dataset.view === 'schedule';
         document.getElementById('pdf-btn').style.display = isSchedule ? '' : 'none';
         document.getElementById('img-btn').style.display = isSchedule ? '' : 'none';
