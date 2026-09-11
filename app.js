@@ -2172,6 +2172,21 @@ function showRotationNotice(message) {
     _rotNoticeTimer = setTimeout(() => { el.classList.remove('in'); setTimeout(() => el.remove(), 250); }, 6000);
 }
 
+// Bulk version of the fix below: a real rotation can need this for eight people, and
+// doing them one at a time rebuilds the whole tab on every click.
+window.activar24hTodos = function () {
+    const faltam = getRotation24hMismatches();
+    if (!faltam.length) return;
+    const nomes = faltam.map(f => f.doc.name.split(' ')[0]).join(', ');
+    if (!confirm(`Ativar "Pode fazer 24h" no perfil de ${faltam.length} ${faltam.length === 1 ? 'médico' : 'médicos'}?\n\n${nomes}`)) return;
+    faltam.forEach(f => { f.doc.can24h = true; });
+    save();
+    renderRotations();
+    renderDoctors();
+    renderSchedule();
+    renderHoursSummary();
+};
+
 // One-click fix from the rotation editor, so the admin doesn't have to go hunting
 // through the doctor's card for a checkbox.
 window.activar24h = function (docId) {
@@ -2210,6 +2225,7 @@ function renderRotationWarnings() {
         out += `<div class="rot-24h-warn">
             <strong>${sem24h.length} ${sem24h.length === 1 ? 'médico faz 24 h na rotação sem ter a opção ativada' : 'médicos fazem 24 h na rotação sem terem a opção ativada'}</strong>
             <p>A rotação põe estas pessoas de dia <b>e</b> de noite no mesmo dia. A escala respeita isso à mesma — a opção do perfil não a impede. Ative a opção para os números baterem certo, ou mude a rotação.</p>
+            ${canEdit && sem24h.length > 1 ? `<button class="btn btn-sm rot-24h-todos" onclick="activar24hTodos()">Ativar 24 h a todos (${sem24h.length})</button>` : ''}
             <ul class="rot-24h-list">${sem24h.map(({ doc, quando }) => `
                 <li>
                     <span class="rot-24h-nome">${esc(doc.name)}</span>
@@ -3715,8 +3731,9 @@ function getTarefeiroVagas(terc, monthsAhead = 6) {
                 // Offer real gaps in started months; always keep own marks AND shifts
                 // they're actually scheduled for (an admin can roster them directly,
                 // which leaves no mark — they must still see it).
-                if (!marked && !assigned && !(scheduled && free > 0)) return;
-                out.push({ date: dt, dk, shift, free, marked, assigned });
+                const recusado = !!((terc.recusados || {})[dk] || {})[shift];
+                if (!marked && !assigned && !recusado && !(scheduled && free > 0)) return;
+                out.push({ date: dt, dk, shift, free, marked, assigned, recusado });
             });
         }
     }
@@ -3731,13 +3748,16 @@ function tarefeiroShiftState(terc, date, shift) {
     const dk = dateKey(date);
     const avail = terc.monthlyAvailability || {};
     const marked = !!(avail[dk] && avail[dk][shift]);
+    const recusado = !!((terc.recusados || {})[dk] || {})[shift];
     const assigned = getAssignedForShift(date, shift);
     const free = DOCTORS_PER_SHIFT - assigned.length;
-    if (assigned.includes(terc.id)) return { state: 'confirmed', free, marked };
-    if (marked && free <= 0)        return { state: 'lost', free, marked };
-    if (marked)                     return { state: 'pending', free, marked };
-    if (free > 0)                   return { state: 'open', free, marked };
-    return { state: 'full', free, marked };
+    if (assigned.includes(terc.id)) return { state: 'confirmed', free, marked, recusado };
+    if (marked && free <= 0)        return { state: 'lost', free, marked, recusado };
+    if (marked)                     return { state: 'pending', free, marked, recusado };
+    // Refused and still open: say so plainly, and let them offer again.
+    if (recusado && free > 0)       return { state: 'declined', free, marked, recusado };
+    if (free > 0)                   return { state: 'open', free, marked, recusado };
+    return { state: 'full', free, marked, recusado };
 }
 
 // Which tab the tarefeiro is looking at: open shifts, or their own.
@@ -3806,8 +3826,8 @@ function renderTarefeiroVagas(terc) {
     // Keep 'pending' visible in the open tab too, so a day doesn't vanish the moment
     // you pick it — you get instant confirmation and can still undo.
     const wanted = tercViewFilter === 'mine'
-        ? d => d.shifts.some(s => ['confirmed', 'pending', 'lost'].includes(s.state))
-        : d => d.shifts.some(s => s.state === 'open' || s.state === 'pending');
+        ? d => d.shifts.some(s => ['confirmed', 'pending', 'lost', 'declined'].includes(s.state))
+        : d => d.shifts.some(s => ['open', 'pending', 'declined'].includes(s.state));
     const shown = days.filter(wanted);
 
     if (shown.length === 0) {
@@ -3819,7 +3839,7 @@ function renderTarefeiroVagas(terc) {
         </div>`;
     } else {
         html += `<p class="tf-help">${tercViewFilter === 'mine'
-            ? 'Verde = confirmado pelo hospital. Amarelo = ainda à espera de resposta.'
+            ? 'Verde = confirmado pelo hospital. Amarelo = ainda à espera de resposta. Cinzento riscado = não aceite, pode pedir outra vez.'
             : 'Toque num turno para se propor. O hospital confirma depois quem fica com ele.'}</p>`;
 
         let lastMonth = null;
@@ -3845,6 +3865,7 @@ function renderTarefeiroVagas(terc) {
                     confirmed: 'Vai trabalhar',
                     pending: 'À espera',
                     lost: 'Foi para outro',
+                    declined: 'Não aceite — tocar para pedir outra vez',
                     open: s.free === 1 ? '1 vaga' : `${Math.max(s.free, 0)} vagas`,
                     full: 'Completo',
                 }[s.state];
@@ -3856,6 +3877,7 @@ function renderTarefeiroVagas(terc) {
                     <span class="tf-chip-sub">${sub}</span>
                     ${s.state === 'confirmed' ? '<span class="tf-chip-lock">🔒</span>' : ''}
                     ${s.state === 'pending' ? '<span class="tf-chip-lock">✓</span>' : ''}
+                    ${s.state === 'declined' ? '<span class="tf-chip-lock">↻</span>' : ''}
                 </button>`;
             });
 
@@ -3936,6 +3958,12 @@ window.toggleVaga = function(dk, shift) {
     } else {
         if (!avail[dk]) avail[dk] = {};
         avail[dk][shift] = true;
+        // Asking again clears the previous refusal, so the shift goes back to "waiting"
+        // instead of staying marked as refused for ever.
+        if (t.recusados && t.recusados[dk]) {
+            delete t.recusados[dk][shift];
+            if (!t.recusados[dk].day && !t.recusados[dk].night) delete t.recusados[dk];
+        }
         logTerceiroAcao(t, 'pedido', dk, shift);
     }
     save();
@@ -3988,7 +4016,19 @@ function pendingRequestsForShift(date, shift) {
 function renderTerceiroHistoryPanel() {
     const eventos = [];
     terceiros.forEach(t => (t.log || []).forEach(e => eventos.push({ ...e, terc: t })));
-    if (eventos.length === 0) return '';
+
+    // Show the panel even with nothing in it. Hiding it made the feature invisible:
+    // the log only starts recording from the day it shipped, so an admin looking for
+    // the history right after found no trace that it existed at all.
+    if (eventos.length === 0) {
+        if (terceiros.length === 0) return '';
+        return `<details class="hist-panel">
+            <summary><span>Histórico de pedidos e confirmações</span><span class="hist-count">0</span></summary>
+            <div class="hist-body"><p class="hist-vazio">Ainda sem registos. A partir de agora fica aqui
+            tudo o que os tarefeiros fizerem — ofertas e desistências — e tudo o que os administradores
+            aceitarem ou recusarem, com a data e quem confirmou.</p></div>
+        </details>`;
+    }
     eventos.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
 
     const MAX = 40;
@@ -4066,6 +4106,10 @@ window.acceptTerceiroRequest = function(tercId, dk, shift) {
         return;
     }
     setAssignedForShift(date, shift, [...assigned, tercId]);
+    if (t.recusados && t.recusados[dk]) {
+        delete t.recusados[dk][shift];
+        if (!t.recusados[dk].day && !t.recusados[dk].night) delete t.recusados[dk];
+    }
     logTerceiroAcao(t, 'aceite', dk, shift);
     save();
     renderTerceiros();
@@ -4079,6 +4123,12 @@ window.declineTerceiroRequest = function(tercId, dk, shift) {
     if (!t || !t.monthlyAvailability || !t.monthlyAvailability[dk]) return;
     delete t.monthlyAvailability[dk][shift];
     if (!t.monthlyAvailability[dk].day && !t.monthlyAvailability[dk].night) delete t.monthlyAvailability[dk];
+    // Record the refusal instead of just erasing the request. Deleting it made the
+    // offer vanish from the tarefeiro's screen with no explanation — they had no way
+    // of telling "not answered yet" from "answered, no".
+    if (!t.recusados) t.recusados = {};
+    if (!t.recusados[dk]) t.recusados[dk] = {};
+    t.recusados[dk][shift] = true;
     logTerceiroAcao(t, 'recusado', dk, shift);
     save();
     renderTerceiros();

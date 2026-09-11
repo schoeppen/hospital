@@ -2472,3 +2472,37 @@ body:not(.role-admin) .admin-only  { display: none !important; }
     .hist-quando { width: 100%; }
 }
 
+.hist-vazio { margin: 0; padding: 12px 14px; font-size: .86rem; color: #6b7d92;
+              line-height: 1.55; }
+
+/* ---- Turno recusado pelo admin (vista do tarefeiro) ---- */
+.tf-chip.declined {
+    background: #f4f5f7; border-color: #ccd2da; color: #6b7280;
+    border-style: dashed;
+}
+.tf-chip.declined .tf-chip-name { text-decoration: line-through; opacity: .75; }
+.tf-chip.declined .tf-chip-sub { color: #8a94a3; }
+.tf-chip.declined .tf-chip-lock { color: #6b7280; font-weight: 700; }
+.tf-chip.declined:hover, .tf-chip.declined:active {
+    background: #eaf1f7; border-color: #1f5f8b; color: #1f3d57; border-style: solid;
+}
+.tf-chip.declined:hover .tf-chip-name { text-decoration: none; opacity: 1; }
+
+/* ---- Alvos de toque em tablet e em qualquer ecrã táctil ----
+   A regra dos 44px dos botões Aceitar/Recusar vivia só no @media de 640px,
+   por isso num tablet ficavam com 30px de altura — e lado a lado, que é a pior
+   combinação para o dedo: um deslize aceita em vez de recusar. */
+@media (pointer: coarse), (max-width: 1024px) {
+    .req-accept, .req-decline { min-height: 44px; padding: 0 16px; font-size: 14px; }
+    .req-actions { gap: 10px; }
+    .tf-tab { min-height: 44px; }
+    .tf-chip { min-height: 48px; }
+    .hist-panel > summary { min-height: 44px; }
+    .rot-24h-btn { min-height: 44px; }
+}
+.rot-24h-todos {
+    background: #b8862b; color: #fff; border: none; margin: 0 0 10px;
+    font-weight: 600;
+}
+.rot-24h-todos:hover { background: #9c7024; }
+@media (pointer: coarse), (max-width: 1024px) { .rot-24h-todos { min-height: 44px; } }
