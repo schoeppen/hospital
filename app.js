@@ -2760,6 +2760,27 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
         });
     });
 
+    // Put each shift in the order the rotation grid shows, BEFORE saving and rendering.
+    // PASS 1 iterates the doctors list, so people landed in list order: a Tuesday the
+    // grid shows as "Mário, Anabel" came out "Anabel, Mário". Seat 1 and seat 2 are not
+    // interchangeable for the service, so this was swapping who holds which role.
+    // Rotation members first, in their seat order, then everyone else.
+    dates.forEach(date => {
+        SHIFTS.forEach(shift => {
+            const arr = getAssignedForShift(date, shift);
+            if (arr.length < 2) return;
+            const ordemDaGrelha = getRotationDoctorsForShift((date.getDay() + 6) % 7, shift, getMonday(date));
+            if (!ordemDaGrelha.length) return;
+            // Covers the case of a single rotation member left too: they lead, rather
+            // than sitting behind whoever the flex passes added.
+            const naGrelha = ordemDaGrelha.filter(id => arr.includes(id));
+            if (!naGrelha.length) return;
+            const resto = arr.filter(id => !naGrelha.includes(id));
+            const novo = [...naGrelha, ...resto];
+            if (novo.join() !== arr.join()) setAssignedForShift(date, shift, novo);
+        });
+    });
+
     save();
     renderSchedule();
     renderHoursSummary();
