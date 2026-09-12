@@ -1870,11 +1870,12 @@ function getRotationDoctorsForShift(dayIdx, shift, weekStartDate) {
     const cell = rotationGrid.cells[`${dayIdx}_${shift}`];
     if (!cell || !cell.length) return [];
     const idx = rotationWeekIndex(weekStartDate);
-    // Cap at the number of seats the editor draws (readCell slices the same way).
-    // An imported or restored grid can hold more names than there are seats, and the
-    // extras were invisible in the Rotações tab yet still requested here: they were
-    // dropped for capacity and charged expected hours for a doctor nobody could see.
-    return (cell[idx] || []).filter(Boolean).slice(0, DOCTORS_PER_SHIFT);
+    // Unique, and capped at the number of seats the editor draws (readCell slices the
+    // same way). An imported or restored grid can hold the same person twice in a cell,
+    // or more names than there are seats. The duplicate used to flow through into the
+    // shift itself — three people in a two-seat shift, one of them listed twice — and
+    // the extras were invisible in the Rotações tab yet still charged expected hours.
+    return [...new Set((cell[idx] || []).filter(Boolean))].slice(0, DOCTORS_PER_SHIFT);
 }
 
 // Is this doctor part of the rotation grid at all (any cell, any week)?
@@ -2386,47 +2387,69 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
     const nomeCurto = id => { const d = doctors.find(x => x.id === id); return d ? d.name.split(' ')[0] : id; };
     const dataCurta = d => `${d.getDate()}/${d.getMonth() + 1}`;
 
+    // The rotation grid outranks the weekly fixed schedule and the monthly rules.
+    // All three used to be treated as one undifferentiated "fixed" source, so the two
+    // seats were filled in doctors-list order and whoever came last lost — always the
+    // same person. A doctor whose weekly fixed said "every Monday night" took the seat
+    // the rotation had given to someone else that week, and the rotation's own weeks
+    // off were ignored. Rotation first, everyone else into what is left.
+    const colocar = (doc, date, shift, arr, origem) => {
+        const turno = SHIFT_LABELS[shift].toLowerCase();
+        if (isMonthlyUnavailable(doc, date, shift)) return false;
+        if (arr.includes(doc.id)) return false;
+
+        // "Bloqueado (semanal)" is an explicit "never this shift", so it beats a
+        // rotation cell that says otherwise.
+        if (isBlockedOnDate(doc, date, shift)) {
+            conflitos.push({ motivo: 'bloqueado', texto: `${nomeCurto(doc.id)} — ${dataCurta(date)} ${turno}: está bloqueado neste turno, mas a rotação/horário pede-o.` });
+            return false;
+        }
+        if (wouldDoubleBookSameDay(doc, date, shift)) {
+            conflitos.push({ motivo: 'dia+noite', texto: `${nomeCurto(doc.id)} — ${dataCurta(date)} ${turno}: ficaria com dia+noite seguidos e não faz 24h.` });
+            return false;
+        }
+        if (workedOtherWeekendDay(doc.id, date)) {
+            conflitos.push({ motivo: 'fim de semana', texto: `${nomeCurto(doc.id)} — ${dataCurta(date)} ${turno}: já trabalha o outro dia deste fim de semana.` });
+            return false;
+        }
+        if (arr.length >= DOCTORS_PER_SHIFT) {
+            conflitos.push({ motivo: origem === 'rotação' ? 'turno cheio' : 'lugar já dado à rotação',
+                texto: `${nomeCurto(doc.id)} — ${dataCurta(date)} ${turno}: o turno já tinha ${DOCTORS_PER_SHIFT} pessoas${origem === 'rotação' ? '' : ' (a rotação tem prioridade)'}.` });
+            return false;
+        }
+        // Rest wins over the configured schedule: the slot is left open so a rested
+        // doctor can take it in PASS 3.
+        if (needsRestAfterNight(doc.id, date, shift)) {
+            conflitos.push({ motivo: 'descanso', texto: `${nomeCurto(doc.id)} — ${dataCurta(date)} ${turno}: fez a noite anterior, precisa de descanso.` });
+            return false;
+        }
+        if (shift === 'night' && hasNextDayConflict(doc.id, date)) {
+            conflitos.push({ motivo: 'descanso', texto: `${nomeCurto(doc.id)} — ${dataCurta(date)} noturno: já trabalha no dia seguinte.` });
+            return false;
+        }
+        arr.push(doc.id);
+        return true;
+    };
+
+    // PASS 1a — the rotation, in the order its seats are laid out.
     dates.forEach(date => {
         SHIFTS.forEach(shift => {
             const { arr } = getSk(date, shift);
-            const turno = SHIFT_LABELS[shift].toLowerCase();
+            const dayIdx = (date.getDay() + 6) % 7;
+            getRotationDoctorsForShift(dayIdx, shift, getMonday(date)).forEach(id => {
+                const doc = doctors.find(d => d.id === id);
+                if (doc) colocar(doc, date, shift, arr, 'rotação');
+            });
+        });
+    });
+
+    // PASS 1b — weekly fixed schedules and monthly rules, into the seats left over.
+    dates.forEach(date => {
+        SHIFTS.forEach(shift => {
+            const { arr } = getSk(date, shift);
             doctors.forEach(doc => {
-                if (!isFixedForShiftOnDate(doc, date, shift) || isMonthlyUnavailable(doc, date, shift)) return;
-                if (arr.includes(doc.id)) return;
-
-                // "Bloqueado (semanal)" is an explicit "never this shift", so it beats a
-                // rotation cell that says otherwise. Every other pass already checked this;
-                // PASS 1 did not, so the rotation silently won and the schedule contradicted
-                // the assign modal, which greys the same doctor out as unavailable.
-                if (isBlockedOnDate(doc, date, shift)) {
-                    conflitos.push({ motivo: 'bloqueado', texto: `${nomeCurto(doc.id)} — ${dataCurta(date)} ${turno}: está bloqueado neste turno, mas a rotação/horário pede-o.` });
-                    return;
-                }
-
-                if (wouldDoubleBookSameDay(doc, date, shift)) {
-                    conflitos.push({ motivo: 'dia+noite', texto: `${nomeCurto(doc.id)} — ${dataCurta(date)} ${turno}: ficaria com dia+noite seguidos e não faz 24h.` });
-                    return;
-                }
-                if (workedOtherWeekendDay(doc.id, date)) {
-                    conflitos.push({ motivo: 'fim de semana', texto: `${nomeCurto(doc.id)} — ${dataCurta(date)} ${turno}: já trabalha o outro dia deste fim de semana.` });
-                    return;
-                }
-                if (arr.length >= DOCTORS_PER_SHIFT) {
-                    conflitos.push({ motivo: 'turno cheio', texto: `${nomeCurto(doc.id)} — ${dataCurta(date)} ${turno}: o turno já tinha ${DOCTORS_PER_SHIFT} pessoas.` });
-                    return;
-                }
-                // Rest wins over the configured schedule: a fixed/rotation shift that
-                // would break the post-night rest is refused, not placed with a warning.
-                // The slot is left open so a rested doctor can take it in PASS 3.
-                if (needsRestAfterNight(doc.id, date, shift)) {
-                    conflitos.push({ motivo: 'descanso', texto: `${nomeCurto(doc.id)} — ${dataCurta(date)} ${turno}: fez a noite anterior, precisa de descanso.` });
-                    return;
-                }
-                if (shift === 'night' && hasNextDayConflict(doc.id, date)) {
-                    conflitos.push({ motivo: 'descanso', texto: `${nomeCurto(doc.id)} — ${dataCurta(date)} noturno: já trabalha no dia seguinte.` });
-                    return;
-                }
-                arr.push(doc.id);
+                if (!isFixedForShiftOnDate(doc, date, shift)) return;
+                colocar(doc, date, shift, arr, 'horário/regra');
             });
         });
     });
@@ -2776,8 +2799,11 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
             const naGrelha = ordemDaGrelha.filter(id => arr.includes(id));
             if (!naGrelha.length) return;
             const resto = arr.filter(id => !naGrelha.includes(id));
-            const novo = [...naGrelha, ...resto];
-            if (novo.join() !== arr.join()) setAssignedForShift(date, shift, novo);
+            // Never let reordering change WHO is in the shift, only the order.
+            const novo = [...new Set([...naGrelha, ...resto])].slice(0, arr.length);
+            if (novo.length === arr.length && novo.join() !== arr.join()) {
+                setAssignedForShift(date, shift, novo);
+            }
         });
     });
 
