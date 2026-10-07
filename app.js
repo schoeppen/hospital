@@ -27,8 +27,13 @@ const LOCAL_CACHE_MAX_AGE_MS = 8 * 60 * 60 * 1000; // 8h
 function writeLocalCache(pending) {
     try {
         localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify({
-            version: 1, timestamp: Date.now(), pending,
-            doctors, schedules, terceiros, rotations: rotationGrid
+            version: 2, timestamp: Date.now(), pending,
+            doctors, schedules, terceiros, rotations: rotationGrid,
+            // The server state these edits were made against. Replaying them later must
+            // merge against THIS, not against whatever the server holds by then — using
+            // the current server value as the base made every shift added elsewhere in
+            // the meantime look "deleted by me", and the replay deleted it for real.
+            base: _base
         }));
     } catch (e) { console.warn('localStorage cheia ou indisponível', e); }
 }
@@ -187,9 +192,22 @@ async function loadData() {
                 `Se marcou disponibilidade e ela não aparece, volte a marcá-la.`), 800);
             clearLocalCache();
             snapshotBase();
+        } else if (!cache.base) {
+            // Written by an older version of the app, with no record of what it was based
+            // on. Replaying it would delete everything added since — discard instead.
+            console.warn('Alterações locais pendentes sem base (versão antiga) — descartadas.');
+            setTimeout(() => alert(
+                `Havia alterações neste dispositivo que nunca chegaram ao servidor e não ` +
+                `puderam ser recuperadas com segurança.\n\nSe alterou algo recentemente e ` +
+                `não aparece, volte a fazê-lo.`), 800);
+            clearLocalCache();
+            snapshotBase();
         } else {
             console.warn(`A restaurar alterações locais pendentes (${Math.round(age/60000)} min)`);
-            snapshotBase();                       // server state is the merge base…
+            snapshotBase();
+            Object.keys(DATA_KEYS).forEach(k => {     // …merge against what the edits were made on
+                if (typeof cache.base[k] === 'string') _base[k] = cache.base[k];
+            });
             if (cache.doctors)   doctors   = cache.doctors;
             if (cache.schedules) schedules = cache.schedules;
             if (cache.rotations) rotationGrid = migrateRotationsToGrid(cache.rotations);
@@ -203,7 +221,7 @@ async function loadData() {
 
 // Pull other people's changes in without losing local edits (merged, never blind-replaced).
 async function refreshFromServer() {
-    if (_saveInFlight || _saveTimer || _retryTimer) return;              // a save is mid-flight; it will merge
+    if (_saveInFlight || _saveTimer || _retryTimer || _restoring) return; // a save is mid-flight; it will merge
     const { data, error } = await db.from('app_data').select('*');
     if (error || !data) return;
     let changed = false;
@@ -351,18 +369,52 @@ async function saveHistory() {
 }
 
 async function loadHistory() {
+    // The whole retention window. A limit of 50 hid older backups: every restore and
+    // every admin page load can add one, so 50 could cover just a few days.
+    const cutoff = new Date(Date.now() - HISTORY_MAX_DAYS * 24 * 60 * 60 * 1000).toISOString();
     const { data, error } = await db.from('app_data_history')
         .select('id, saved_at')
+        .gte('saved_at', cutoff)
         .order('saved_at', { ascending: false })
-        .limit(50);
+        .limit(1000);
     if (error) { console.error(error); return []; }
     return data;
 }
 
+// Filled slots per month ("YYYY-MM" -> count) in a schedules object.
+function countSlotsByMonth(sched) {
+    const out = {};
+    Object.values(sched || {}).forEach(week => {
+        Object.entries(week || {}).forEach(([sk, ids]) => {
+            const m = sk.slice(0, 7);
+            out[m] = (out[m] || 0) + (Array.isArray(ids) ? ids.length : 0);
+        });
+    });
+    return out;
+}
+
+let _restoring = false;
 async function restoreHistory(id) {
+    if (_restoring) return;
     const { data, error } = await db.from('app_data_history')
         .select('*').eq('id', id).single();
     if (error || !data) { alert('Erro ao carregar versão.'); return; }
+
+    // Show what is about to change before replacing everything.
+    const before = countSlotsByMonth(schedules), after = countSlotsByMonth(data.schedules);
+    const months = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort().slice(-4);
+    const resumo = months.map(m => `  ${m}: ${before[m] || 0} → ${after[m] || 0} turnos`).join('\n');
+    const quando = new Date(data.saved_at).toLocaleString('pt-PT');
+    if (!confirm(`Restaurar a versão de ${quando}?\n\nTurnos preenchidos (atual → versão):\n${resumo}\n\n` +
+                 `Isto substitui TODOS os dados atuais (escala, médicos, tarefeiros e rotações).`)) return;
+
+    _restoring = true;
+    try {
+    // A save already queued or mid-flight would land AFTER the restore and write the
+    // old schedule straight back. Cancel queued ones and wait for the in-flight one.
+    if (_saveTimer)  { clearTimeout(_saveTimer);  _saveTimer = null; }
+    if (_retryTimer) { clearTimeout(_retryTimer); _retryTimer = null; }
+    while (_saveInFlight) await new Promise(r => setTimeout(r, 100));
     // Save current state to history before restoring
     lastHistorySaveTime = 0;
     await saveHistory();
@@ -393,9 +445,11 @@ async function restoreHistory(id) {
         return;
     }
     snapshotBase();                      // the server now matches what we hold
+    writeLocalCache(false);              // drop pending local edits so a reload can't replay them over the restore
     renderAll();
     closeHistoryModal();
     showSaveStatus('Versão restaurada!');
+    } finally { _restoring = false; }
 }
 
 function openHistoryModal() {
@@ -449,7 +503,7 @@ function save() {
 
 async function performSave() {
     _saveTimer = null;
-    if (_saveInFlight) {               // overlap → re-queue after current finishes
+    if (_saveInFlight || _restoring) { // overlap (or a restore running) → re-queue
         _saveTimer = setTimeout(performSave, SAVE_DEBOUNCE_MS);
         return;
     }
