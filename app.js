@@ -624,8 +624,26 @@ function dateKey(d) {
 // NÃO "corrigir" sem migrar os dados: mudar a fórmula re-chaveia toda a escala
 // já guardada e ela passa a aparecer vazia. E nunca fazer parseDateKey() de uma
 // chave de semana — daria um dia a menos durante meio ano.
+//
+// ATUALIZAÇÃO: a fórmula acima só é consistente se TODOS os dispositivos estiverem
+// na hora de Lisboa. Um tablet com o fuso de Madrid/Paris dava outra chave a partir
+// da mudança para a hora de inverno e via a escala vazia (e gravava noutra semana).
+// Esta versão devolve sempre a MESMA chave que um dispositivo em Lisboa devolvia,
+// seja qual for o fuso do dispositivo — por isso não é preciso migrar dados.
+const _lisbonHour = (() => {
+    try {
+        const f = new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Lisbon', hour: '2-digit', hourCycle: 'h23' });
+        return d => Number(f.format(d));
+    } catch { return null; }
+})();
+
 function weekKey(date) {
-    return date.toISOString().slice(0, 10);
+    if (!_lisbonHour) return date.toISOString().slice(0, 10);
+    const y = date.getFullYear(), m = date.getMonth(), d = date.getDate();
+    // Lisboa está em UTC+0 ou UTC+1. À 00:00 UTC deste dia são 0h (inverno) ou
+    // 1h (verão); no verão a meia-noite de Lisboa ainda é o dia anterior em UTC.
+    const summer = _lisbonHour(new Date(Date.UTC(y, m, d))) === 1;
+    return new Date(Date.UTC(y, m, d - (summer ? 1 : 0))).toISOString().slice(0, 10);
 }
 
 function getWeekDates() {
