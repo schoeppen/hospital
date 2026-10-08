@@ -5,10 +5,15 @@
 -- ============================================================
 begin;
 
--- 0. Nenhuma outra regra pode deixar a app escrever diretamente na escala antiga
+-- 0. Verificações (se alguma falhar, nada muda)
 do $$
 declare extra text;
 begin
+  -- as funções corrigidas (schedule-log-update.sql) têm de estar instaladas
+  if pg_get_functiondef('public.apply_schedule_changes(jsonb,text)'::regprocedure) not like '%one writer at a time%' then
+    raise exception 'NADA FOI ALTERADO. Corra primeiro schedule-log-update.sql (passo 4).';
+  end if;
+  -- nenhuma outra regra pode deixar a app escrever diretamente na escala antiga
   select string_agg(policyname || ' (' || cmd || ')', ', ') into extra
   from pg_policies
   where schemaname = 'public' and tablename = 'app_data'
