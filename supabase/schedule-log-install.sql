@@ -310,6 +310,42 @@ begin
   return _set_cells(items, 'Restaurar cópia #' || p_id, gen_random_uuid());
 end $$;
 
+-- Versões (como no Google Sheets): a escala tal como estava logo a seguir à
+-- alteração nº p_id do registo (0 = antes de qualquer alteração registada).
+create or replace function public._cells_after_log(p_id bigint)
+returns table (day date, shift text, people text[])
+language sql stable security definer set search_path = public as $$
+  select coalesce(c.day, f.day), coalesce(c.shift, f.shift), coalesce(f.before, c.people)
+  from schedule_cells c
+  full join (select distinct on (day, shift) day, shift, before
+             from schedule_log where id > p_id order by day, shift, id) f
+    on f.day = c.day and f.shift = c.shift
+$$;
+
+create or replace function public.get_schedule_at_log(p_id bigint)
+returns jsonb language plpgsql stable security definer set search_path = public as $$
+begin
+  perform _require_admin();
+  return jsonb_build_object('cells', coalesce((
+    select jsonb_agg(jsonb_build_array(to_char(day, 'YYYY-MM-DD'), shift, people))
+    from _cells_after_log(p_id) where cardinality(people) > 0), '[]'::jsonb));
+end $$;
+
+-- Restaurar essa versão. Fica registado como alterações, por isso pode ser desfeito.
+create or replace function public.revert_schedule_to_log(p_id bigint)
+returns int language plpgsql security definer set search_path = public as $$
+declare items jsonb; quando text;
+begin
+  perform _require_admin();
+  select to_char(at at time zone 'Europe/Lisbon', 'DD/MM HH24:MI') into quando from schedule_log where id = p_id;
+  select coalesce(jsonb_agg(jsonb_build_object('day', v.day, 'shift', v.shift, 'people', to_jsonb(v.people))), '[]'::jsonb)
+  into items
+  from _cells_after_log(p_id) v
+  left join schedule_cells c on c.day = v.day and c.shift = v.shift
+  where coalesce(c.people, '{}') is distinct from v.people;
+  return _set_cells(items, 'Restaurar versão de ' || coalesce(quando, 'início'), gen_random_uuid());
+end $$;
+
 -- 6. Permissões
 -- Tabelas novas: ler sim (com as regras acima); escrever diretamente nunca —
 -- só através das funções. O arquivo não é acessível de todo pela app.
@@ -324,6 +360,11 @@ revoke all on function public.list_schedule_log(int, bigint) from public, anon;
 revoke all on function public.undo_schedule_change(bigint, boolean) from public, anon;
 revoke all on function public.revert_schedule_to(timestamptz) from public, anon;
 revoke all on function public.restore_schedule_from_history(bigint) from public, anon;
+revoke all on function public._cells_after_log(bigint) from public, anon, authenticated;
+revoke all on function public.get_schedule_at_log(bigint) from public, anon;
+revoke all on function public.revert_schedule_to_log(bigint) from public, anon;
+grant execute on function public.get_schedule_at_log(bigint) to authenticated;
+grant execute on function public.revert_schedule_to_log(bigint) to authenticated;
 grant execute on function public.get_schedule() to authenticated;
 grant execute on function public.apply_schedule_changes(jsonb, text) to authenticated;
 grant execute on function public.list_schedule_log(int, bigint) to authenticated;

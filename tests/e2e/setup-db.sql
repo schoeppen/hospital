@@ -4,7 +4,7 @@ create schema auth;
 create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('test.uid', true), '')::uuid $$;
 grant usage on schema auth to authenticated;
 create table profiles (id uuid primary key, name text, role text);
-insert into profiles values ('00000000-0000-0000-0000-00000000000a','Maria Oliveira','admin'),('00000000-0000-0000-0000-00000000000b','Tarefeira','tarefeiro');
+insert into profiles values ('00000000-0000-0000-0000-00000000000a','Maria Oliveira','admin'),('00000000-0000-0000-0000-00000000000b','Tarefeira','tarefeiro'),('00000000-0000-0000-0000-00000000000c','João Teste','admin');
 create function current_app_role() returns text language sql stable security definer set search_path=public as $$ select role from profiles where id = auth.uid() $$;
 create table app_data (key text primary key, value json);
 alter table app_data enable row level security;

@@ -384,7 +384,7 @@ async function loadData() {
 
 // Pull other people's changes in without losing local edits (merged, never blind-replaced).
 async function refreshFromServer() {
-    if (_saveInFlight || _saveTimer || _retryTimer || _restoring) return; // a save is mid-flight; it will merge
+    if (_saveInFlight || _saveTimer || _retryTimer || _restoring || _preview) return; // a save is mid-flight; it will merge
     const prevMode = _scheduleMode;
     const cellData = await fetchScheduleCells();
     if (_scheduleMode !== prevMode) { location.reload(); return; }   // switched storage: start clean
@@ -641,92 +641,262 @@ async function restoreHistory(id) {
     } finally { _restoring = false; }
 }
 
-// ---- Lista de alterações (modo células) ----
-let _logGroups = [];
+// ---- Histórico de versões (como no Google Sheets) ----
+// Changes grouped by hour (Lisbon time), with who edited. Each hour opens into its
+// individual edits; any version can be viewed (highlighted in the calendar) and
+// restored, and any single edit — or a single shift within it — can be undone.
+// Versions are identified by log id, not by time, so nothing is off by a millisecond.
+let _verRows = [];          // log rows, newest first
+let _verHours = [];         // [{ key, label, rows, edits: [{ rows }] }]
+let _verMore = false;
+let _verOpen = new Set();   // expanded hour keys
+let _histTab = 'versions';
 
-function renderChangeLog(rows) {
-    // Consecutive rows of the same batch form one group (one save, one Auto-preencher…)
-    _logGroups = [];
-    rows.forEach(r => {
-        const g = _logGroups[_logGroups.length - 1];
-        if (g && g.batch === r.batch_id) g.rows.push(r);
-        else _logGroups.push({ batch: r.batch_id, rows: [r] });
-    });
-    if (!_logGroups.length) return '<p style="padding:8px 16px;color:#7f8c8d">Ainda não há alterações registadas.</p>';
-    const names = ids => (ids || []).map(personName).join(', ') || '—';
-    return _logGroups.map((g, gi) => {
-        const first = g.rows[0];
-        const when = new Date(first.at).toLocaleString('pt-PT', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' });
-        const lines = g.rows.slice(0, 6).map(r =>
-            `<div style="font-size:12px;color:#475569">${esc(shiftLabel(`${r.day}_${r.shift}`))}: ` +
-            `${esc(names(r.before))} → <strong>${esc(names(r.after))}</strong></div>`).join('');
-        const more = g.rows.length > 6 ? `<div style="font-size:12px;color:#7f8c8d">+ ${g.rows.length - 6} turnos</div>` : '';
-        return `<div class="history-entry" style="align-items:flex-start">
-            <span class="history-date">🕑 ${when} · ${esc(first.by_name || '—')} · ${esc(first.label || 'Edição')}${lines}${more}</span>
-            <span style="display:flex;flex-direction:column;gap:4px">
-                <button class="btn btn-sm btn-primary" onclick="undoLogGroup(${gi})">Desfazer</button>
-                <button class="btn btn-sm" onclick="revertBeforeLogGroup(${gi})" title="Desfaz esta e todas as alterações seguintes">Voltar a antes disto</button>
-            </span>
-        </div>`;
-    }).join('');
+const _lisbonParts = (() => {
+    const f = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Lisbon', year: 'numeric', month: '2-digit',
+        day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+    return iso => {
+        const p = Object.fromEntries(f.formatToParts(new Date(iso)).map(x => [x.type, x.value]));
+        return { day: `${p.year}-${p.month}-${p.day}`, hh: p.hour, mm: p.minute };
+    };
+})();
+
+function _dayLabel(day) {
+    const today = _lisbonParts(new Date().toISOString()).day;
+    const yest = _lisbonParts(new Date(Date.now() - 864e5).toISOString()).day;
+    if (day === today) return 'Hoje';
+    if (day === yest) return 'Ontem';
+    const [y, m, d] = day.split('-').map(Number);
+    return `${d} ${MONTH_NAMES[m - 1].slice(0, 3).toLowerCase()}${y !== new Date().getFullYear() ? ' ' + y : ''}`;
 }
 
-async function undoLogGroup(gi) {
-    const g = _logGroups[gi];
-    if (!g || !confirm(`Desfazer esta alteração (${g.rows.length} ${g.rows.length === 1 ? 'turno' : 'turnos'})?`)) return;
-    const { error } = await db.rpc('undo_schedule_change', { p_log_id: g.rows[0].id, p_whole_batch: true });
+const _USER_COLORS = ['#2563eb', '#db2777', '#059669', '#d97706', '#7c3aed', '#0891b2', '#dc2626', '#4d7c0f'];
+function _userDot(name) {
+    let h = 0; for (const ch of String(name || '?')) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+    return `<span class="ver-dot" style="background:${_USER_COLORS[h % _USER_COLORS.length]}"></span>`;
+}
+
+function _buildVersionGroups() {
+    _verHours = [];
+    _verRows.forEach(r => {
+        const t = _lisbonParts(r.at);
+        const key = `${t.day} ${t.hh}`;
+        let h = _verHours[_verHours.length - 1];
+        if (!h || h.key !== key) { h = { key, label: `${_dayLabel(t.day)}, ${t.hh}:00`, rows: [], edits: [] }; _verHours.push(h); }
+        h.rows.push(r);
+        const e = h.edits[h.edits.length - 1];
+        if (e && e.rows[0].batch_id === r.batch_id) e.rows.push(r); else h.edits.push({ rows: [r] });
+    });
+}
+
+function _versionTarget(hi, bi) {
+    if (hi === -1) return { id: 0, changed: [], when: 'a versão inicial', isCurrent: false };
+    const h = _verHours[hi];
+    const rows = bi == null ? h.rows : h.edits[bi].rows;
+    const t = _lisbonParts(rows[0].at);
+    return {
+        id: rows[0].id,                                   // newest row of the hour / edit
+        changed: rows.map(r => `${r.day}_${r.shift}`),
+        when: `${_dayLabel(t.day)}, ${t.hh}:${t.mm}`,
+        isCurrent: rows[0].id === _verRows[0].id,
+    };
+}
+
+function _renderVersions() {
+    if (!_verRows.length) return '<p style="padding:16px;color:#7f8c8d">Ainda não há alterações registadas.</p>';
+    const names = ids => (ids || []).map(personName).join(', ') || '—';
+    const html = _verHours.map((h, hi) => {
+        const users = [...new Set(h.rows.map(r => r.by_name || '—'))];
+        const open = _verOpen.has(h.key);
+        const edits = h.edits.map((e, bi) => {
+            const r0 = e.rows[0], t = _lisbonParts(r0.at), many = e.rows.length > 1;
+            const lines = e.rows.map(r => `<div class="ver-line">
+                    <span>${esc(shiftLabel(`${r.day}_${r.shift}`))}: <s>${esc(names(r.before))}</s> → <strong>${esc(names(r.after))}</strong></span>
+                    ${many ? `<button class="ver-link" onclick="undoVersionEdit(${r.id}, false)">Desfazer</button>` : ''}
+                </div>`).join('');
+            const isCurrent = r0.id === _verRows[0].id;
+            return `<div class="ver-edit">
+                <div class="ver-edit-head">
+                    <span>${t.hh}:${t.mm} · ${_userDot(r0.by_name)}${esc(r0.by_name || '—')} · ${esc(r0.label || 'Edição')}${many ? ` (${e.rows.length} turnos)` : ''}</span>
+                    <span class="ver-actions">
+                        <button class="ver-link" onclick="previewVersion(${hi}, ${bi})">Ver</button>
+                        ${isCurrent ? '' : `<button class="ver-link" onclick="restoreVersion(${hi}, ${bi})">Restaurar até aqui</button>`}
+                        <button class="ver-link" onclick="undoVersionEdit(${r0.id}, true)">Desfazer${many ? ' tudo' : ''}</button>
+                    </span>
+                </div>
+                <div class="ver-lines ${e.rows.length > 4 ? 'ver-lines-long' : ''}">${lines}</div>
+            </div>`;
+        }).join('');
+        return `<div class="ver-hour ${open ? 'open' : ''}">
+            <div class="ver-hour-head" onclick="toggleVersionHour('${h.key}')">
+                <div><span class="ver-caret">▸</span> <strong>${esc(h.label)}</strong>
+                    ${hi === 0 ? '<span class="ver-current">Versão atual</span>' : ''}
+                    <span class="ver-count">${h.rows.length} ${h.rows.length === 1 ? 'alteração' : 'alterações'}</span></div>
+                <div class="ver-users">${users.map(u => `${_userDot(u)}${esc(u)}`).join(' &nbsp;')}</div>
+            </div>
+            <div class="ver-hour-actions">
+                <button class="btn btn-sm" onclick="previewVersion(${hi})">Ver</button>
+                ${hi === 0 ? '' : `<button class="btn btn-sm btn-primary" onclick="restoreVersion(${hi})">Restaurar esta versão</button>`}
+            </div>
+            <div class="ver-edits">${edits}</div>
+        </div>`;
+    }).join('');
+    const initial = `<div class="ver-hour">
+            <div class="ver-hour-head"><strong>Versão inicial</strong>
+                <span class="ver-count">como estava antes de começar o registo de alterações</span></div>
+            <div class="ver-hour-actions">
+                <button class="btn btn-sm" onclick="previewVersion(-1)">Ver</button>
+                <button class="btn btn-sm btn-primary" onclick="restoreVersion(-1)">Restaurar esta versão</button>
+            </div></div>`;
+    return html + (_verMore
+        ? '<div style="text-align:center;padding:10px"><button class="btn btn-sm" onclick="loadMoreVersions()">Ver alterações mais antigas</button></div>'
+        : initial);
+}
+
+async function _loadVersions(more) {
+    const before = more && _verRows.length ? _verRows[_verRows.length - 1].id : null;
+    const { data, error } = await db.rpc('list_schedule_log', { p_limit: 500, p_before_id: before });
+    if (error) throw error;
+    _verRows = more ? _verRows.concat(data || []) : (data || []);
+    _verMore = (data || []).length === 500;
+    _buildVersionGroups();
+}
+
+function toggleVersionHour(key) {
+    if (_verOpen.has(key)) _verOpen.delete(key); else _verOpen.add(key);
+    _showHistoryTab(_histTab);
+}
+
+async function loadMoreVersions() {
+    await _loadVersions(true);
+    _showHistoryTab('versions');
+}
+
+async function undoVersionEdit(logId, wholeEdit) {
+    if (!confirm(wholeEdit ? 'Desfazer esta alteração?' : 'Desfazer só este turno?')) return;
+    const { error } = await db.rpc('undo_schedule_change', { p_log_id: logId, p_whole_batch: wholeEdit });
     if (error) { alert(error.message || error); return; }
     await reloadScheduleFromServer();
     showSaveStatus('Alteração desfeita');
     openHistoryModal();
 }
 
-async function revertBeforeLogGroup(gi) {
-    const g = _logGroups[gi];
-    if (!g) return;
-    const oldest = g.rows[g.rows.length - 1];
-    const at = new Date(new Date(oldest.at).getTime() - 1);
-    if (!confirm(`Voltar a escala ao estado de ${at.toLocaleString('pt-PT')}?\n\n` +
-                 `Desfaz esta alteração e TODAS as seguintes (${gi + 1} na lista). ` +
-                 `Fica registado, por isso também pode ser desfeito.`)) return;
-    const { error } = await db.rpc('revert_schedule_to', { p_at: at.toISOString() });
+async function restoreVersion(hi, bi) {
+    const v = _versionTarget(hi, bi);
+    if (!confirm(`Restaurar a escala como estava em ${v.when}?\n\nAs alterações feitas depois ficam desfeitas — ` +
+                 `mas ficam registadas, por isso pode sempre voltar atrás.`)) return;
+    await _revertToLog(v.id);
+}
+
+async function _revertToLog(id) {
+    const { error } = await db.rpc('revert_schedule_to_log', { p_id: id });
     if (error) { alert(error.message || error); return; }
     await reloadScheduleFromServer();
-    showSaveStatus('Escala reposta');
-    openHistoryModal();
+    showSaveStatus('Versão restaurada');
+}
+
+// Preview: show a version in the calendar, read-only, with the changed shifts highlighted.
+let _preview = null;
+
+async function previewVersion(hi, bi) {
+    const v = _versionTarget(hi, bi);
+    const { data, error } = await db.rpc('get_schedule_at_log', { p_id: v.id });
+    if (error) { alert(error.message || error); return; }
+    if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; await performSave(); }
+    while (_saveInFlight) await new Promise(r => setTimeout(r, 100));
+    if (!_preview) _preview = { saved: schedules };
+    Object.assign(_preview, { id: v.id, when: v.when, isCurrent: v.isCurrent, changed: new Set(v.changed) });
+    schedules = scheduleFromCells(data.cells);
+    closeHistoryModal();
+    document.body.classList.add('previewing');
+    const nav = document.querySelector('.nav-btn[data-view="schedule"]');
+    if (nav && !nav.classList.contains('active')) nav.click();
+    const first = [...v.changed].sort()[0];
+    if (first) { currentSchedYear = Number(first.slice(0, 4)); currentSchedMonth = Number(first.slice(5, 7)) - 1; }
+    let bar = document.getElementById('preview-banner');
+    if (!bar) {
+        bar = document.createElement('div');
+        bar.id = 'preview-banner';
+        document.getElementById('schedule-view').prepend(bar);
+    }
+    bar.innerHTML = `<span>👁 A ver a versão de <strong>${esc(v.when)}</strong> — os turnos alterados estão destacados.</span>
+        <span>${v.isCurrent ? '' : '<button class="btn btn-sm btn-primary" onclick="restorePreviewed()">Restaurar esta versão</button>'}
+        <button class="btn btn-sm" onclick="exitPreview(true)">Voltar ao histórico</button>
+        <button class="btn btn-sm" onclick="exitPreview()">Fechar</button></span>`;
+    renderSchedule();
+}
+
+function applyPreviewHighlight() {
+    if (!_preview) return;
+    _preview.changed.forEach(sk => {
+        document.querySelectorAll(`#schedule-grid [data-date="${sk.slice(0, 10)}"][data-shift="${sk.slice(11)}"]`)
+            .forEach(el => { if (el.matches('.cal-shift-row, .shift-cell')) el.classList.add('preview-changed'); });
+    });
+}
+
+function exitPreview(backToHistory) {
+    if (!_preview) return;
+    schedules = _preview.saved;
+    _preview = null;
+    document.body.classList.remove('previewing');
+    const bar = document.getElementById('preview-banner');
+    if (bar) bar.remove();
+    renderAll();
+    if (backToHistory) openHistoryModal();
+}
+
+async function restorePreviewed() {
+    if (!_preview) return;
+    const { id, when } = _preview;
+    if (!confirm(`Restaurar a escala como estava em ${when}?\n\nAs alterações feitas depois ficam desfeitas — ` +
+                 `mas ficam registadas, por isso pode sempre voltar atrás.`)) return;
+    exitPreview();
+    await _revertToLog(id);
+}
+
+let _backupEntries = [];
+
+function _renderBackups() {
+    const entries = _backupEntries;
+    if (!entries || entries.length === 0) return '<p style="padding:16px;color:#7f8c8d">Sem cópias guardadas ainda.</p>';
+    const m1 = `${currentSchedYear}-${String(currentSchedMonth + 1).padStart(2, '0')}`;
+    const nx = new Date(currentSchedYear, currentSchedMonth + 1, 1);
+    const m2 = `${nx.getFullYear()}-${String(nx.getMonth() + 1).padStart(2, '0')}`;
+    const short = m => MONTH_NAMES[Number(m.slice(5)) - 1].slice(0, 3);
+    return entries.map(e => {
+        const d = new Date(e.saved_at);
+        const label = d.toLocaleString('pt-PT', { timeZone: 'Europe/Lisbon', day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' });
+        const slots = e.slots || {};
+        const counts = `${short(m1)}: ${slots[m1] || 0} · ${short(m2)}: ${slots[m2] || 0} turnos`;
+        return `<div class="history-entry">
+            <span class="history-date">📅 ${label}<br><small style="color:#7f8c8d">${esc(e.reason || 'Cópia')} — ${counts}</small></span>
+            <button class="btn btn-sm btn-primary" onclick="restoreHistory(${e.id})">Restaurar</button>
+        </div>`;
+    }).join('');
+}
+
+function _showHistoryTab(tab) {
+    _histTab = tab;
+    const content = document.getElementById('history-content');
+    const tabs = _scheduleMode === 'cells'
+        ? `<div class="hist-tabs">
+               <button class="hist-tab ${tab === 'versions' ? 'active' : ''}" onclick="_showHistoryTab('versions')">Versões</button>
+               <button class="hist-tab ${tab === 'backups' ? 'active' : ''}" onclick="_showHistoryTab('backups')">Cópias de segurança</button>
+           </div>` : '';
+    content.innerHTML = tabs + (tab === 'versions' && _scheduleMode === 'cells' ? _renderVersions() : _renderBackups());
 }
 
 function openHistoryModal() {
+    if (_preview) exitPreview();
     const modal = document.getElementById('history-modal');
     const content = document.getElementById('history-content');
     content.innerHTML = '<p style="padding:16px;color:#7f8c8d">A carregar...</p>';
     modal.classList.add('open');
-    const logPromise = _scheduleMode === 'cells'
-        ? db.rpc('list_schedule_log', { p_limit: 300 }).then(({ data, error }) => { if (error) throw error; return data || []; })
-        : Promise.resolve(null);
-    Promise.all([loadHistory(), logPromise]).then(([entries, logRows]) => {
-        const logHtml = logRows
-            ? `<h4 style="margin:12px 16px 4px">Alterações à escala</h4>${renderChangeLog(logRows)}` +
-              `<h4 style="margin:16px 16px 4px">Cópias de segurança</h4>`
-            : '';
-        if (!entries || entries.length === 0) {
-            content.innerHTML = logHtml + '<p style="padding:16px;color:#7f8c8d">Sem histórico guardado ainda.</p>';
-            return;
-        }
-        const m1 = `${currentSchedYear}-${String(currentSchedMonth + 1).padStart(2, '0')}`;
-        const nx = new Date(currentSchedYear, currentSchedMonth + 1, 1);
-        const m2 = `${nx.getFullYear()}-${String(nx.getMonth() + 1).padStart(2, '0')}`;
-        const short = m => MONTH_NAMES[Number(m.slice(5)) - 1].slice(0, 3);
-        content.innerHTML = logHtml + entries.map(e => {
-            const d = new Date(e.saved_at);
-            const label = d.toLocaleString('pt-PT', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' });
-            const slots = e.slots || {};
-            const counts = `${short(m1)}: ${slots[m1] || 0} · ${short(m2)}: ${slots[m2] || 0} turnos`;
-            return `<div class="history-entry">
-                <span class="history-date">📅 ${label}<br><small style="color:#7f8c8d">${esc(e.reason || 'Cópia')} — ${counts}</small></span>
-                <button class="btn btn-sm btn-primary" onclick="restoreHistory(${e.id})">Restaurar</button>
-            </div>`;
-        }).join('');
+    Promise.all([
+        loadHistory().then(e => { _backupEntries = e; }),
+        _scheduleMode === 'cells' ? _loadVersions(false) : Promise.resolve(),
+    ]).then(() => {
+        _showHistoryTab(_scheduleMode === 'cells' ? _histTab : 'backups');
     }).catch(err => {
         content.innerHTML = `<p style="padding:16px;color:#991b1b">Erro ao carregar o histórico: ${esc(err.message || err)}</p>`;
     });
@@ -751,6 +921,7 @@ function setSaveStatus(state, msg) {
 }
 
 function save() {
+    if (_preview) return;              // previewing an old version: read-only
     writeLocalCache(true);             // instant local backup
     setSaveStatus('saving', '⏳ A guardar...');
     if (_saveTimer)  clearTimeout(_saveTimer);
@@ -1415,8 +1586,9 @@ function getRotationOrphanIds() {
 }
 
 function renderSchedule() {
-    if (scheduleViewMode === 'list') { renderScheduleList(); return; }
-    renderScheduleCalendar();
+    if (scheduleViewMode === 'list') renderScheduleList();
+    else renderScheduleCalendar();
+    applyPreviewHighlight();
 }
 
 // Small S-number marker for the monthly views. Only on the Monday of each week (or

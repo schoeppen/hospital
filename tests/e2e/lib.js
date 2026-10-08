@@ -1,6 +1,6 @@
 let chromium; try { ({ chromium } = require('playwright')); } catch { ({ chromium } = require('/opt/node-tools/node_modules/playwright')); }
 const BASE = 'http://localhost:8787/';
-const ADMIN = '00000000-0000-0000-0000-00000000000a', TAREF = '00000000-0000-0000-0000-00000000000b';
+const ADMIN = '00000000-0000-0000-0000-00000000000a', TAREF = '00000000-0000-0000-0000-00000000000b', JOAO = '00000000-0000-0000-0000-00000000000c';
 async function openApp(browser, uid = ADMIN, opts = {}) {
   const ctx = opts.ctx || await browser.newContext({ timezoneId: opts.tz || 'Europe/Lisbon' });
   const page = await ctx.newPage();
@@ -23,4 +23,4 @@ const state = page => page.evaluate(() => ({
 }));
 const cell = (page, sk) => page.evaluate(sk => flattenSchedule(schedules)[sk] || [], sk);
 const settle = async page => { await page.waitForFunction(() => !_saveTimer && !_saveInFlight && !_retryTimer, null, { timeout: 20000 }); await page.waitForTimeout(200); };
-module.exports = { chromium, openApp, state, cell, settle, ADMIN, TAREF };
+module.exports = { chromium, openApp, state, cell, settle, ADMIN, TAREF, JOAO };

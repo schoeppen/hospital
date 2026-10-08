@@ -4,6 +4,7 @@
 const http = require('http'), fs = require('fs'), path = require('path');
 const { Pool } = require(process.env.PG_MODULE || 'pg');
 const pool = new Pool({ host: '/var/tmp/pgt', port: 5499, user: 'postgres', database: process.env.DB || 'p1' });
+pool.on('error', () => {});   // the test database is recreated between runs
 const APP = path.resolve(__dirname, '../..');
 const ident = s => { if (!/^[a-z_][a-z0-9_]*$/i.test(s)) throw new Error('bad ident ' + s); return '"' + s + '"'; };
 

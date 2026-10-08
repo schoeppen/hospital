@@ -1,7 +1,15 @@
 const { execSync } = require('child_process');
-const { chromium, openApp, state, cell, settle, ADMIN, TAREF } = require('./lib');
+const { chromium, openApp, state, cell, settle, ADMIN, TAREF, JOAO } = require('./lib');
 const sql = q => execSync(`psql -q -h /var/tmp/pgt -p 5499 -U postgres -d p1 -At -c "${q.replace(/"/g, '\\"')}"`).toString().trim();
 const results = [];
+async function expandFirstHour(page) {
+  const first = page.locator('#history-content .ver-hour >> nth=0');
+  if (!(await first.evaluate(el => el.classList.contains('open')))) await first.locator('.ver-hour-head').click();
+}
+async function openVersions(page) {
+  await page.evaluate(() => openHistoryModal());
+  await page.waitForSelector('#history-content .ver-hour');
+}
 const check = (name, ok, extra = '') => { results.push(`${ok ? 'PASS' : 'FAIL'}  ${name}${extra ? '  — ' + extra : ''}`); };
 
 (async () => {
@@ -25,7 +33,7 @@ const check = (name, ok, extra = '') => { results.push(`${ok ? 'PASS' : 'FAIL'} 
     sql("select count(*) from _cells_vs_blob()") === '0');
 
   // S3 two admins: B has a stale copy and edits the same shift A changed
-  const B = await openApp(browser);
+  const B = await openApp(browser, JOAO);
   await B.page.evaluate(() => { stopAutoRefresh(); });             // keep B stale on purpose
   await A.page.evaluate(() => { setAssignedForShift(parseDateKey('2026-11-05'), 'night', ['d1']); save(); });
   await settle(A.page);
@@ -95,35 +103,88 @@ const check = (name, ok, extra = '') => { results.push(`${ok ? 'PASS' : 'FAIL'} 
   const afterClear = sql("select coalesce(sum(cardinality(people)),0) from schedule_cells where day between '2026-11-01' and '2026-11-30'");
   check('S6a clear month removed November, backup made first',
     afterClear === '0' && sql("select reason from app_data_history order by id desc limit 1").startsWith('Antes de limpar mês'), `nov slots=${afterClear} left=${sql("select string_agg(day||' '||shift||' '||people::text, '; ') from schedule_cells where day between '2026-11-01' and '2026-11-30' and cardinality(people)>0")} dialogs=${JSON.stringify(A.page.dialogs.slice(-2))}`);
-  await A.page.evaluate(() => openHistoryModal());
-  await A.page.waitForSelector('#history-content button:has-text("Desfazer")');
-  await A.page.click('#history-content button:has-text("Desfazer") >> nth=0');
+  await openVersions(A.page);
+  await expandFirstHour(A.page);
+  await A.page.click('#history-content .ver-hour >> nth=0 >> .ver-edit >> nth=0 >> button.ver-link:text-is("Desfazer tudo")');
   await A.page.waitForTimeout(1500); await settle(A.page);
   const afterUndo = sql("select coalesce(sum(cardinality(people)),0) from schedule_cells where day between '2026-11-01' and '2026-11-30'");
   const uiSlots = await A.page.evaluate(() => Object.entries(flattenSchedule(schedules)).filter(([k]) => k.startsWith('2026-11')).reduce((a, [, v]) => a + v.length, 0));
   check('S6b Desfazer brings November back (server and screen)', afterUndo === uiSlots.toString() && Number(afterUndo) > 60, `server=${afterUndo} screen=${uiSlots}`);
 
   // S7 Voltar a antes disto: back to before S2
-  await A.page.evaluate(() => openHistoryModal());
-  await A.page.waitForSelector('#history-content button:has-text("Voltar a antes disto")');
-  const n = await A.page.locator('#history-content button:has-text("Voltar a antes disto")').count();
-  await A.page.locator('#history-content button:has-text("Voltar a antes disto")').nth(n - 1).click();
+  await openVersions(A.page);
+  await A.page.locator('#history-content .ver-hour:has-text("Versão inicial") button:text-is("Restaurar esta versão")').click();
   await A.page.waitForTimeout(1500); await settle(A.page);
-  check('S7 "Voltar a antes disto" (oldest) restores the original schedule exactly',
+  check('S7 "Versão inicial → Restaurar esta versão" restores the original schedule exactly',
     sql("select count(*) from (select day, shift, people from schedule_cells where cardinality(people)>0 except select day, shift, people from _blob_cells((select value::jsonb from app_data_archive where note='Antes da instalação da Fase 1' and key='chbv_schedules' limit 1))) x") === '0' &&
     sql("select sum(cardinality(people)) from schedule_cells") === '288');
 
+
+  // V1 hour groups list every editor
+  await B.page.evaluate(() => { startAutoRefresh(); });
+  await B.page.evaluate(() => refreshFromServer()); await B.page.waitForTimeout(500);
+  await B.page.evaluate(() => { setAssignedForShift(parseDateKey('2026-11-14'), 'night', ['d2']); save(); });
+  await settle(B.page);
+  await A.page.evaluate(() => refreshFromServer()); await A.page.waitForTimeout(500);
+  await openVersions(A.page);
+  const head0 = await A.page.locator('#history-content .ver-hour >> nth=0 >> .ver-hour-head').innerText();
+  check('V1 newest hour shows both editors and a change count',
+    head0.includes('Maria Oliveira') && head0.includes('João Teste') && /\d+ alterações/.test(head0), head0.replace(/\s+/g, ' '));
+
+  // V2 an edit touching 2 shifts; undo just one of them from inside the edit
+  await A.page.evaluate(() => { document.getElementById('history-modal').classList.remove('open');
+    setAssignedForShift(parseDateKey('2026-11-16'), 'day', ['d1']); setAssignedForShift(parseDateKey('2026-11-16'), 'night', ['d1']); save(); });
+  await settle(A.page);
+  await openVersions(A.page);
+  await expandFirstHour(A.page);
+  const firstEdit = A.page.locator('#history-content .ver-hour >> nth=0 >> .ver-edit >> nth=0');
+  const lines = await firstEdit.locator('.ver-line').allInnerTexts();
+  await firstEdit.locator('.ver-line >> nth=0 >> button.ver-link:text-is("Desfazer")').click();
+  await A.page.waitForTimeout(1200); await settle(A.page);
+  const d16 = sql("select string_agg(shift||'='||people::text, ',' order by shift) from schedule_cells where day='2026-11-16'");
+  check('V2 undo one shift inside a 2-shift edit leaves the other', lines.length === 2 &&
+    ((d16.includes('day={d1}') && !d16.includes('night={d1}')) || (!d16.includes('day={d1}') && d16.includes('night={d1}'))), `${lines.join(' | ')} → ${d16}`);
+
+  // V3 Ver: preview an earlier version — highlighted, read-only, server untouched
+  const serverBefore = sql("select md5(string_agg(day||shift||people::text, ',' order by day, shift)) from schedule_cells");
+  await openVersions(A.page);
+  await expandFirstHour(A.page);
+  const edits = A.page.locator('#history-content .ver-hour >> nth=0 >> .ver-edit');
+  await edits.nth(2).locator('button.ver-link:text-is("Ver")').click();
+  await A.page.waitForTimeout(800);
+  const pv = await A.page.evaluate(() => ({
+    previewing: document.body.classList.contains('previewing'),
+    banner: (document.getElementById('preview-banner') || {}).innerText || '',
+    highlighted: document.querySelectorAll('.preview-changed').length,
+  }));
+  await A.page.evaluate(() => { setAssignedForShift(parseDateKey('2026-11-20'), 'day', []); save(); });  // must be ignored
+  await A.page.waitForTimeout(800);
+  const serverDuring = sql("select md5(string_agg(day||shift||people::text, ',' order by day, shift)) from schedule_cells");
+  check('V3 Ver shows a read-only, highlighted version; nothing saved', pv.previewing && pv.banner.includes('A ver a versão') &&
+    pv.highlighted > 0 && serverDuring === serverBefore, JSON.stringify(pv));
+
+  // V4 Restaurar esta versão from the preview → server = that version, and it is itself undoable
+  const targetId = await A.page.evaluate(() => _preview.id);
+  await A.page.click('#preview-banner button:text-is("Restaurar esta versão")');
+  await A.page.waitForTimeout(1500); await settle(A.page);
+  const now = sql("select md5(string_agg(day||shift||people::text, ',' order by day, shift)) from schedule_cells where cardinality(people)>0");
+  const want = sql(`select md5(string_agg(day||shift||people::text, ',' order by day, shift)) from _cells_after_log(${targetId}) where cardinality(people)>0`);
+  check('V4 restore from preview: schedule equals that version, logged as a restore',
+    now === want && !(await A.page.evaluate(() => document.body.classList.contains('previewing'))) &&
+    sql("select label from schedule_log order by id desc limit 1").startsWith('Restaurar versão de'));
+
   // S8 tarefeiro: cannot change the schedule, availability still saves
+  const total = sql("select sum(cardinality(people)) from schedule_cells");
   const T = await openApp(browser, TAREF);
   await T.page.evaluate(() => { terceiros = [{ id: 't', name: 'T', monthlyAvailability: { '2026-11-20': { day: true } } }]; save(); });
   await settle(T.page);
   check('S8 tarefeiro availability saved, schedule untouched',
-    sql("select value::text from app_data where key='chbv_terceiros'").includes('2026-11-20') && sql("select sum(cardinality(people)) from schedule_cells") === '288');
+    sql("select value::text from app_data where key='chbv_terceiros'").includes('2026-11-20') && sql("select sum(cardinality(people)) from schedule_cells") === total);
 
   // S9 device on Cyprus time sees exactly the same schedule
   const K = await openApp(browser, ADMIN, { tz: 'Asia/Nicosia' });
   const k = await state(K.page);
-  check('S9 Cyprus-time device sees the same 288 slots', k.slots === 288, JSON.stringify(k));
+  check('S9 Cyprus-time device sees exactly the same schedule', k.slots === Number(total), JSON.stringify(k) + ' server=' + total);
 
 
   // S12 restore a backup from the Histórico window (cells mode): logged, undoable
@@ -166,9 +227,9 @@ const check = (name, ok, extra = '') => { results.push(`${ok ? 'PASS' : 'FAIL'} 
     sql("select count(*) from schedule_log where label='Remover médico'") === d2before &&
     sql("select count(*) from app_data_history where reason like 'Antes de remover%'") !== '0', `cells with d2 before=${d2before}`);
   // and undo it from the list
-  await A.page.evaluate(() => openHistoryModal());
-  await A.page.waitForSelector('#history-content button:has-text("Desfazer")');
-  await A.page.click('#history-content button:has-text("Desfazer") >> nth=0');
+  await openVersions(A.page);
+  await expandFirstHour(A.page);
+  await A.page.click('#history-content .ver-hour >> nth=0 >> .ver-edit >> nth=0 >> button.ver-link:text-is("Desfazer tudo")');
   await A.page.waitForTimeout(1500); await settle(A.page);
   check('S15b undo puts the doctor back in all those shifts', sql("select count(*) from schedule_cells where 'd2' = any(people)") === d2before);
 

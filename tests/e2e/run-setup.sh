@@ -5,7 +5,7 @@
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$HERE/../.."
 export PGHOST=${PGHOST:-/var/tmp/pgt} PGPORT=${PGPORT:-5499} PGUSER=${PGUSER:-postgres}
-psql -q -c "drop database if exists p1" -c "create database p1" >/dev/null 2>&1
+psql -q -c "drop database if exists p1 with (force)" -c "create database p1" >/dev/null
 psql -q -d p1 -f "$HERE/setup-db.sql" >/dev/null
 psql -q -d p1 -c "alter table profiles add column if not exists created_at timestamptz default now()"
 SCHED=$(TZ=Europe/Lisbon node "$HERE/gen-schedule.js" | node -e 'let s=JSON.parse(require("fs").readFileSync(0));s["2026-11-01"]={"2026-11-03_day":["zz"]};s["2026-10-26"]["junk"]=5;process.stdout.write(JSON.stringify(s))')
