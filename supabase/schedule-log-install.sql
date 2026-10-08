@@ -156,6 +156,8 @@ begin
   end if;
 
   for it in select * from jsonb_to_recordset(p_items) as i(day date, shift text, people text[]) loop
+    insert into schedule_cells (day, shift, people, rev) values (it.day, it.shift, '{}', 0)
+      on conflict (day, shift) do nothing;
     select people into cur from schedule_cells where day = it.day and shift = it.shift for update;
     cur := coalesce(cur, '{}');
     if cur is distinct from it.people then
@@ -225,6 +227,10 @@ begin
       out := out || jsonb_build_object('op_id', ch.op_id, 'status', 'duplicate');
       continue;
     end if;
+    -- Reserve the row first: for a shift that never existed, two simultaneous edits
+    -- would otherwise both see "empty" and the second would silently replace the first.
+    insert into schedule_cells (day, shift, people, rev) values (ch.day, ch.shift, '{}', 0)
+      on conflict (day, shift) do nothing;
     select people into cur from schedule_cells where day = ch.day and shift = ch.shift for update;
     cur := coalesce(cur, '{}');
     if cur is distinct from ch.expected then

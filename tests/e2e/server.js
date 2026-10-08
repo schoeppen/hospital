@@ -91,7 +91,10 @@ http.createServer(async (req, res) => {
     return;
   }
   let p = req.url.split('?')[0]; if (p === '/') p = '/index.html';
-  const file = p === '/fake-supabase.js' ? path.join(__dirname, 'fake-supabase.js') : path.join(APP, p);
+  // APP_DIR_FILE lets a test "publish" a different app version mid-run
+  const appDir = process.env.APP_DIR_FILE && fs.existsSync(process.env.APP_DIR_FILE)
+    ? fs.readFileSync(process.env.APP_DIR_FILE, 'utf8').trim() : APP;
+  const file = p === '/fake-supabase.js' ? path.join(__dirname, 'fake-supabase.js') : path.join(appDir, p);
   fs.readFile(file, (e, d) => {
     if (e) { res.statusCode = 404; return res.end('nf'); }
     res.setHeader('content-type', file.endsWith('.js') ? 'text/javascript' : file.endsWith('.css') ? 'text/css' : 'text/html');
