@@ -63,8 +63,8 @@ const DATA_KEYS = {
 };
 let _base = {};   // key -> JSON string of the server value this client started from
 
-function snapshotBase() {
-    Object.keys(DATA_KEYS).forEach(k => { _base[k] = JSON.stringify(DATA_KEYS[k].get() ?? null); });
+function snapshotBase(keys = Object.keys(DATA_KEYS)) {
+    keys.forEach(k => { _base[k] = JSON.stringify(DATA_KEYS[k].get() ?? null); });
 }
 
 function localChanged(key) {
@@ -159,6 +159,167 @@ function mergeKey(key, theirsRaw) {
     }
 }
 
+// ---- Schedule cells (registo de alterações) ----
+// When the database says schedule_store = 'cells', the schedule lives one row per shift
+// (schedule_cells) and every change goes through apply_schedule_changes, which logs it:
+//  • each edit carries an id, so a retried request is applied only once;
+//  • each edit says which value it replaces, so an edit made on a stale copy is
+//    refused instead of overwriting someone else's newer work.
+// The old single-row schedule (app_data.chbv_schedules) is kept identical by the
+// database and is read-only for the app in this mode, so going back is always possible.
+let _scheduleMode = 'blob';
+let _scheduleRev = null;
+let _saveLabel = null;                  // what the next save is, e.g. 'Auto-preencher'
+const _pendingOps = new Map();          // shiftKey -> { op_id, expected, people } (same id on retries)
+
+function setSaveLabel(label) { _saveLabel = label; }
+
+const _sameIds = (a, b) => JSON.stringify(a || []) === JSON.stringify(b || []);
+
+// { "YYYY-MM-DD_day|night": [ids] }, each shift read from the week the app shows it in.
+function flattenSchedule(sched) {
+    const out = {};
+    Object.entries(sched || {}).forEach(([wk, week]) => {
+        Object.entries(week || {}).forEach(([sk, ids]) => {
+            const m = /^(\d{4}-\d{2}-\d{2})_(day|night)$/.exec(sk);
+            if (!m || !Array.isArray(ids)) return;
+            if (weekKey(getMonday(parseDateKey(m[1]))) !== wk) return;
+            out[sk] = ids;
+        });
+    });
+    return out;
+}
+
+function setCellIn(sched, sk, ids) {
+    const wk = weekKey(getMonday(parseDateKey(sk.slice(0, 10))));
+    if (!ids || ids.length === 0) { if (sched[wk]) delete sched[wk][sk]; return; }
+    if (!sched[wk]) sched[wk] = {};
+    sched[wk][sk] = [...ids];
+}
+
+function scheduleFromCells(cells) {
+    const sched = {};
+    (cells || []).forEach(([day, shift, people]) => setCellIn(sched, `${day}_${shift}`, people));
+    return sched;
+}
+
+// The schedule in cells mode, or null while the database is still in the old mode
+// (or the new functions are not installed yet).
+async function fetchScheduleCells() {
+    const { data, error } = await db.rpc('get_schedule');
+    if (error || !data) return null;
+    _scheduleMode = data.mode === 'cells' ? 'cells' : 'blob';
+    return _scheduleMode === 'cells' ? data : null;
+}
+
+function newOpId() {
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+        const r = Math.random() * 16 | 0;
+        return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);
+    });
+}
+
+function shiftLabel(sk) {
+    const [y, m, d] = sk.slice(0, 10).split('-');
+    return `${d}/${m} ${sk.endsWith('_day') ? 'Diurno' : 'Noturno'}`;
+}
+
+function personName(id) {
+    const p = doctors.find(d => d.id === id) || terceiros.find(t => t.id === id);
+    return p ? p.name : id;
+}
+
+// Send the shifts this device changed. Returns null on success, or the error.
+async function saveScheduleCells() {
+    const baseSched = JSON.parse(_base.chbv_schedules || '{}') || {};
+    const base = flattenSchedule(baseSched), mine = flattenSchedule(schedules);
+    const changes = [];
+    new Set([...Object.keys(base), ...Object.keys(mine)]).forEach(sk => {
+        const expected = base[sk] || [], people = mine[sk] || [];
+        if (_sameIds(expected, people)) { _pendingOps.delete(sk); return; }
+        let op = _pendingOps.get(sk);
+        if (!op || !_sameIds(op.expected, expected) || !_sameIds(op.people, people)) {
+            op = { op_id: newOpId(), expected: [...expected], people: [...people] };
+            _pendingOps.set(sk, op);
+        }
+        changes.push({ op_id: op.op_id, day: sk.slice(0, 10), shift: sk.slice(11), expected: op.expected, people: op.people });
+    });
+    if (changes.length === 0) { _base.chbv_schedules = JSON.stringify(schedules); return null; }
+
+    const { data, error } = await db.rpc('apply_schedule_changes', { p_changes: changes, p_label: _saveLabel || 'Edição' });
+    if (error) return error;
+    _saveLabel = null;
+    const byOp = new Map(changes.map(c => [c.op_id, c]));
+    const mineNow = flattenSchedule(schedules);
+    const conflicts = [];
+    (data.results || []).forEach(r => {
+        const ch = byOp.get(r.op_id);
+        if (!ch) return;
+        const sk = `${ch.day}_${ch.shift}`;
+        _pendingOps.delete(sk);
+        if (r.status === 'ok' || r.status === 'duplicate') {
+            setCellIn(baseSched, sk, ch.people);
+        } else if (r.status === 'conflict') {
+            // Someone changed this shift first: keep theirs. If this device has changed it
+            // yet again in the meantime, that newer edit goes out on the next save.
+            const current = r.current || [];
+            setCellIn(baseSched, sk, current);
+            if (_sameIds(mineNow[sk], ch.people)) {
+                setCellIn(schedules, sk, current);
+                if (!_sameIds(current, ch.people)) conflicts.push(sk);
+            }
+        } else {
+            setCellIn(baseSched, sk, ch.expected);
+            setCellIn(schedules, sk, ch.expected);
+        }
+    });
+    _base.chbv_schedules = JSON.stringify(baseSched);
+    _scheduleRev = data.rev;
+    if (conflicts.length) {
+        renderAll();
+        setTimeout(() => alert(
+            'Estes turnos foram alterados por outra pessoa ao mesmo tempo, por isso ficou a versão dela:\n\n' +
+            conflicts.map(sk => '• ' + shiftLabel(sk) + ': ' +
+                ((flattenSchedule(schedules)[sk] || []).map(personName).join(', ') || 'vazio')).join('\n') +
+            '\n\nSe for preciso, volte a fazer a alteração.'), 50);
+    }
+    return null;
+}
+
+// Take other people's shift changes, leaving the ones this device is still sending.
+async function refreshScheduleCells(data) {
+    if (!data || data.rev === _scheduleRev) return false;
+    const server = {};
+    data.cells.forEach(([d, sh, p]) => { server[`${d}_${sh}`] = p; });
+    const baseSched = JSON.parse(_base.chbv_schedules || '{}') || {};
+    const base = flattenSchedule(baseSched), mine = flattenSchedule(schedules);
+    let changed = false;
+    new Set([...Object.keys(server), ...Object.keys(base), ...Object.keys(mine)]).forEach(sk => {
+        if (!_sameIds(mine[sk], base[sk])) return;            // edited here, not sent yet
+        const sv = server[sk] || [];
+        if (!_sameIds(mine[sk], sv)) { setCellIn(schedules, sk, sv); changed = true; }
+        setCellIn(baseSched, sk, sv);
+    });
+    _base.chbv_schedules = JSON.stringify(baseSched);
+    _scheduleRev = data.rev;
+    return changed;
+}
+
+// Finish any pending save, then load the schedule fresh from the server.
+async function reloadScheduleFromServer() {
+    if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; await performSave(); }
+    while (_saveInFlight) await new Promise(r => setTimeout(r, 100));
+    const data = await fetchScheduleCells();
+    if (!data) return;
+    schedules = scheduleFromCells(data.cells);
+    _scheduleRev = data.rev;
+    _pendingOps.clear();
+    snapshotBase(['chbv_schedules']);
+    writeLocalCache(false);
+    renderAll();
+}
+
 async function loadData() {
     const { data, error } = await db.from('app_data').select('*');
     if (error) { console.error('Erro ao carregar dados:', error); }
@@ -175,6 +336,8 @@ async function loadData() {
     if (!Array.isArray(doctors)) doctors = [];
     if (!Array.isArray(terceiros)) terceiros = [];
     if (!schedules || typeof schedules !== 'object') schedules = {};
+    const cellData = await fetchScheduleCells();
+    if (cellData) { schedules = scheduleFromCells(cellData.cells); _scheduleRev = cellData.rev; }
 
     // Restore pending local edits that never reached the server — but only if recent.
     const cache = readLocalCache();
@@ -222,16 +385,22 @@ async function loadData() {
 // Pull other people's changes in without losing local edits (merged, never blind-replaced).
 async function refreshFromServer() {
     if (_saveInFlight || _saveTimer || _retryTimer || _restoring) return; // a save is mid-flight; it will merge
+    const prevMode = _scheduleMode;
+    const cellData = await fetchScheduleCells();
+    if (_scheduleMode !== prevMode) { location.reload(); return; }   // switched storage: start clean
     const { data, error } = await db.from('app_data').select('*');
     if (error || !data) return;
+    if (_saveInFlight || _saveTimer || _retryTimer || _restoring) return; // an edit started meanwhile
+    const blobKeys = Object.keys(DATA_KEYS).filter(k => !(k === 'chbv_schedules' && _scheduleMode === 'cells'));
     let changed = false;
     data.forEach(row => {
-        if (!DATA_KEYS[row.key] || row.value === null || row.value === undefined) return;
+        if (!blobKeys.includes(row.key) || row.value === null || row.value === undefined) return;
         const merged = mergeKey(row.key, row.value);
         if (JSON.stringify(merged) !== JSON.stringify(DATA_KEYS[row.key].get())) changed = true;
         DATA_KEYS[row.key].set(merged);
     });
-    snapshotBase();
+    snapshotBase(blobKeys);
+    if (_scheduleMode === 'cells' && await refreshScheduleCells(cellData)) changed = true;
     if (changed) renderAll();
 }
 
@@ -363,6 +532,7 @@ function countSlotsByMonth(sched) {
     const out = {};
     Object.values(sched || {}).forEach(week => {
         Object.entries(week || {}).forEach(([sk, ids]) => {
+            if (!/^\d{4}-\d{2}-\d{2}_(day|night)$/.test(sk)) return;
             const m = sk.slice(0, 7);
             out[m] = (out[m] || 0) + (Array.isArray(ids) ? ids.length : 0);
         });
@@ -375,8 +545,11 @@ function isRestorableVersion(v) {
     const isObj = x => x && typeof x === 'object' && !Array.isArray(x);
     if (!Array.isArray(v.doctors) || !isObj(v.schedules)) return false;
     if (v.terceiros != null && !Array.isArray(v.terceiros)) return false;
+    // Every week must be an object and every shift a list of ids. Keys that are not
+    // shifts (e.g. a stray value) are ignored, as the app and the database ignore them.
     return Object.values(v.schedules).every(week => isObj(week) &&
-        Object.values(week).every(ids => Array.isArray(ids) && ids.every(id => typeof id === 'string')));
+        Object.entries(week).every(([sk, ids]) => !/^\d{4}-\d{2}-\d{2}_(day|night)$/.test(sk) ||
+            (Array.isArray(ids) && ids.every(id => typeof id === 'string'))));
 }
 
 let _restoring = false;
@@ -413,6 +586,33 @@ async function restoreHistory(id) {
               (snapErr.message || snapErr));
         return;
     }
+    if (_scheduleMode === 'cells') {
+        // The schedule is restored by the database, as logged changes (so the restore
+        // itself can be undone from the list of changes); the rest is written as before.
+        const { error: schedErr } = await db.rpc('restore_schedule_from_history', { p_id: id });
+        if (schedErr) {
+            alert('Não foi possível restaurar a escala: ' + (schedErr.message || schedErr) + '\n\nNada foi alterado.');
+            return;
+        }
+        const { error: restErr } = await db.from('app_data').upsert([
+            { key: 'chbv_doctors', value: data.doctors },
+            { key: 'chbv_rotations', value: migrateRotationsToGrid(data.rotations) },
+            { key: 'chbv_terceiros', value: Array.isArray(data.terceiros) ? data.terceiros : [] },
+        ]);
+        if (!restErr) {
+            doctors = data.doctors;
+            rotationGrid = migrateRotationsToGrid(data.rotations);
+            terceiros = Array.isArray(data.terceiros) ? data.terceiros : [];
+            snapshotBase(['chbv_doctors', 'chbv_rotations', 'chbv_terceiros']);
+        }
+        _restoring = false;
+        await reloadScheduleFromServer();
+        closeHistoryModal();
+        if (restErr) alert('A escala foi restaurada, mas os médicos/tarefeiros/rotações não: ' + (restErr.message || restErr));
+        else showSaveStatus('Versão restaurada!');
+        return;
+    }
+
     const prev = { doctors, schedules, rotationGrid, terceiros };
     doctors = data.doctors;
     schedules = data.schedules;
@@ -441,21 +641,83 @@ async function restoreHistory(id) {
     } finally { _restoring = false; }
 }
 
+// ---- Lista de alterações (modo células) ----
+let _logGroups = [];
+
+function renderChangeLog(rows) {
+    // Consecutive rows of the same batch form one group (one save, one Auto-preencher…)
+    _logGroups = [];
+    rows.forEach(r => {
+        const g = _logGroups[_logGroups.length - 1];
+        if (g && g.batch === r.batch_id) g.rows.push(r);
+        else _logGroups.push({ batch: r.batch_id, rows: [r] });
+    });
+    if (!_logGroups.length) return '<p style="padding:8px 16px;color:#7f8c8d">Ainda não há alterações registadas.</p>';
+    const names = ids => (ids || []).map(personName).join(', ') || '—';
+    return _logGroups.map((g, gi) => {
+        const first = g.rows[0];
+        const when = new Date(first.at).toLocaleString('pt-PT', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' });
+        const lines = g.rows.slice(0, 6).map(r =>
+            `<div style="font-size:12px;color:#475569">${esc(shiftLabel(`${r.day}_${r.shift}`))}: ` +
+            `${esc(names(r.before))} → <strong>${esc(names(r.after))}</strong></div>`).join('');
+        const more = g.rows.length > 6 ? `<div style="font-size:12px;color:#7f8c8d">+ ${g.rows.length - 6} turnos</div>` : '';
+        return `<div class="history-entry" style="align-items:flex-start">
+            <span class="history-date">🕑 ${when} · ${esc(first.by_name || '—')} · ${esc(first.label || 'Edição')}${lines}${more}</span>
+            <span style="display:flex;flex-direction:column;gap:4px">
+                <button class="btn btn-sm btn-primary" onclick="undoLogGroup(${gi})">Desfazer</button>
+                <button class="btn btn-sm" onclick="revertBeforeLogGroup(${gi})" title="Desfaz esta e todas as alterações seguintes">Voltar a antes disto</button>
+            </span>
+        </div>`;
+    }).join('');
+}
+
+async function undoLogGroup(gi) {
+    const g = _logGroups[gi];
+    if (!g || !confirm(`Desfazer esta alteração (${g.rows.length} ${g.rows.length === 1 ? 'turno' : 'turnos'})?`)) return;
+    const { error } = await db.rpc('undo_schedule_change', { p_log_id: g.rows[0].id, p_whole_batch: true });
+    if (error) { alert(error.message || error); return; }
+    await reloadScheduleFromServer();
+    showSaveStatus('Alteração desfeita');
+    openHistoryModal();
+}
+
+async function revertBeforeLogGroup(gi) {
+    const g = _logGroups[gi];
+    if (!g) return;
+    const oldest = g.rows[g.rows.length - 1];
+    const at = new Date(new Date(oldest.at).getTime() - 1);
+    if (!confirm(`Voltar a escala ao estado de ${at.toLocaleString('pt-PT')}?\n\n` +
+                 `Desfaz esta alteração e TODAS as seguintes (${gi + 1} na lista). ` +
+                 `Fica registado, por isso também pode ser desfeito.`)) return;
+    const { error } = await db.rpc('revert_schedule_to', { p_at: at.toISOString() });
+    if (error) { alert(error.message || error); return; }
+    await reloadScheduleFromServer();
+    showSaveStatus('Escala reposta');
+    openHistoryModal();
+}
+
 function openHistoryModal() {
     const modal = document.getElementById('history-modal');
     const content = document.getElementById('history-content');
     content.innerHTML = '<p style="padding:16px;color:#7f8c8d">A carregar...</p>';
     modal.classList.add('open');
-    loadHistory().then(entries => {
+    const logPromise = _scheduleMode === 'cells'
+        ? db.rpc('list_schedule_log', { p_limit: 300 }).then(({ data, error }) => { if (error) throw error; return data || []; })
+        : Promise.resolve(null);
+    Promise.all([loadHistory(), logPromise]).then(([entries, logRows]) => {
+        const logHtml = logRows
+            ? `<h4 style="margin:12px 16px 4px">Alterações à escala</h4>${renderChangeLog(logRows)}` +
+              `<h4 style="margin:16px 16px 4px">Cópias de segurança</h4>`
+            : '';
         if (!entries || entries.length === 0) {
-            content.innerHTML = '<p style="padding:16px;color:#7f8c8d">Sem histórico guardado ainda.</p>';
+            content.innerHTML = logHtml + '<p style="padding:16px;color:#7f8c8d">Sem histórico guardado ainda.</p>';
             return;
         }
         const m1 = `${currentSchedYear}-${String(currentSchedMonth + 1).padStart(2, '0')}`;
         const nx = new Date(currentSchedYear, currentSchedMonth + 1, 1);
         const m2 = `${nx.getFullYear()}-${String(nx.getMonth() + 1).padStart(2, '0')}`;
         const short = m => MONTH_NAMES[Number(m.slice(5)) - 1].slice(0, 3);
-        content.innerHTML = entries.map(e => {
+        content.innerHTML = logHtml + entries.map(e => {
             const d = new Date(e.saved_at);
             const label = d.toLocaleString('pt-PT', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' });
             const slots = e.slots || {};
@@ -520,30 +782,50 @@ async function performSave() {
     // the upsert is a single statement: including any other key would make the whole
     // batch fail, silently losing the one change they're allowed to make.
     if (currentRole === 'tarefeiro') dirtyKeys = dirtyKeys.filter(k => k === 'chbv_terceiros');
-    if (dirtyKeys.length === 0) {
+    // In cells mode the schedule is sent shift by shift (logged), never as one block.
+    let schedulePending = false;
+    if (_scheduleMode === 'cells' && dirtyKeys.includes('chbv_schedules')) {
+        dirtyKeys = dirtyKeys.filter(k => k !== 'chbv_schedules');
+        schedulePending = currentRole === 'admin';
+    }
+    if (dirtyKeys.length === 0 && !schedulePending) {
         writeLocalCache(false);
         setSaveStatus('saved', '✓ Guardado');
         return;
     }
 
     for (let attempt = 0; attempt <= RETRY_BACKOFF_MS.length; attempt++) {
-        // Re-read just before writing so we merge onto the freshest state
-        const { data: current, error: readErr } = await db.from('app_data')
-            .select('key,value').in('key', dirtyKeys);
-        if (readErr) {
-            lastError = readErr;
-        } else {
-            const serverByKey = {};
-            (current || []).forEach(r => { serverByKey[r.key] = r.value; });
-            const entries = dirtyKeys.map(k => {
-                const merged = mergeKey(k, serverByKey[k]);
-                DATA_KEYS[k].set(merged);      // keep local state = what we're writing
-                return { key: k, value: merged };
-            });
-            const { error } = await db.from('app_data').upsert(entries);
-            if (!error) { lastError = null; snapshotBase(); break; }
-            lastError = error;
+        let attemptErr = null;
+        try {
+        if (schedulePending) {
+            attemptErr = await saveScheduleCells();
+            if (!attemptErr) schedulePending = false;
         }
+        if (!attemptErr && dirtyKeys.length) {
+            // Re-read just before writing so we merge onto the freshest state
+            const { data: current, error: readErr } = await db.from('app_data')
+                .select('key,value').in('key', dirtyKeys);
+            if (readErr) {
+                attemptErr = readErr;
+            } else {
+                const serverByKey = {};
+                (current || []).forEach(r => { serverByKey[r.key] = r.value; });
+                const entries = dirtyKeys.map(k => {
+                    const merged = mergeKey(k, serverByKey[k]);
+                    DATA_KEYS[k].set(merged);      // keep local state = what we're writing
+                    return { key: k, value: merged };
+                });
+                const { error } = await db.from('app_data').upsert(entries);
+                if (error) attemptErr = error;
+                else { snapshotBase(dirtyKeys); dirtyKeys = []; }
+            }
+        }
+        } catch (e) {
+            // A dropped connection can throw instead of returning an error: same retry.
+            attemptErr = e;
+        }
+        if (!attemptErr) { lastError = null; break; }
+        lastError = attemptErr;
         console.warn(`Save attempt ${attempt + 1} failed:`, lastError.message || lastError);
         if (attempt < RETRY_BACKOFF_MS.length) {
             await new Promise(r => setTimeout(r, RETRY_BACKOFF_MS[attempt]));
@@ -558,6 +840,14 @@ async function performSave() {
         return;
     }
 
+    // An edit made while this save was running (or one whose shift was changed by
+    // someone else meanwhile) still needs sending.
+    const writable = currentRole === 'admin' ? Object.keys(DATA_KEYS)
+                   : currentRole === 'tarefeiro' ? ['chbv_terceiros'] : [];
+    if (writable.some(localChanged) && !_saveTimer) {
+        _saveTimer = setTimeout(performSave, SAVE_DEBOUNCE_MS);
+        return;
+    }
     writeLocalCache(false);            // clean cache, no longer pending
     if (_retryTimer) { clearTimeout(_retryTimer); _retryTimer = null; }
     setSaveStatus('saved', '✓ Guardado');
@@ -2873,6 +3163,7 @@ document.getElementById('auto-fill-btn').addEventListener('click', () => {
         });
     });
 
+    setSaveLabel('Auto-preencher');
     save();
     renderSchedule();
     renderHoursSummary();
@@ -3000,6 +3291,7 @@ document.getElementById('clear-week-btn').addEventListener('click', () => {
             delete sched[sk];
         });
     });
+    setSaveLabel('Limpar mês');
     save();
     renderSchedule();
     renderHoursSummary();
@@ -3019,6 +3311,7 @@ document.getElementById('clear-week-btn').addEventListener('click', () => {
             if (skipped) {
                 alert(`Restaurados ${restored} turnos. ${skipped} não foram repostos porque já tinham sido preenchidos entretanto.`);
             }
+            setSaveLabel('Desfazer limpar mês');
             save();
             // Jump back to the restored month so the result is visible
             currentSchedMonth = clearedMonth; currentSchedYear = clearedYear;
@@ -3750,6 +4043,7 @@ window.deleteDoctor = function(id) {
     Object.keys(rotationGrid.cells).forEach(key => {
         rotationGrid.cells[key] = rotationGrid.cells[key].map(w => w.filter(d => d !== id));
     });
+    setSaveLabel('Remover médico');
     save();
     renderDoctors();
     renderRotations();
@@ -4825,6 +5119,7 @@ function importData(file) {
             terceiros = data.terceiros || [];
             schedules = data.schedules || {};
             rotationGrid = migrateRotationsToGrid(data.rotations);
+            setSaveLabel('Importar ficheiro');
             save();
             renderSchedule();
             renderDoctors();
