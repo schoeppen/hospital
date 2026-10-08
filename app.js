@@ -73,6 +73,26 @@ function localChanged(key) {
 
 // Merge helper: for a map of independent entries, an entry I changed wins, otherwise
 // the server's entry wins. Entries only I added are kept; entries only I deleted stay deleted.
+// Three-way merge of two edited copies of the same value, against the value both
+// started from. Objects are merged key by key (recursively); anything else (numbers,
+// text, lists) is taken whole. When both changed the very same value, this device's wins.
+function merge3(base, mine, theirs) {
+    const s = JSON.stringify;
+    if (s(mine) === s(base)) return theirs;
+    if (s(theirs) === s(base) || s(theirs) === s(mine)) return mine;
+    const isObj = x => x !== null && typeof x === 'object' && !Array.isArray(x);
+    if (isObj(mine) && isObj(theirs)) {
+        const b = isObj(base) ? base : {};
+        const out = {};
+        new Set([...Object.keys(theirs), ...Object.keys(mine), ...Object.keys(b)]).forEach(k => {
+            const v = merge3(b[k], mine[k], theirs[k]);
+            if (v !== undefined) out[k] = v;
+        });
+        return out;
+    }
+    return mine;
+}
+
 function mergeById(baseArr, mineArr, theirsArr, idOf) {
     const base = new Map((baseArr || []).map(x => [idOf(x), JSON.stringify(x)]));
     const mine = new Map((mineArr || []).map(x => [idOf(x), x]));
@@ -89,8 +109,10 @@ function mergeById(baseArr, mineArr, theirsArr, idOf) {
             out.push(t);
             return;
         }
-        const iChangedIt = JSON.stringify(mine.get(id)) !== base.get(id);
-        out.push(iChangedIt ? mine.get(id) : t);
+        // Merge field by field (and day by day inside availability): two people changing
+        // different things in the same record — a tarefeira adding a day while an admin
+        // declines another — both survive. It used to keep one whole record and drop the other.
+        out.push(merge3(base.has(id) ? JSON.parse(base.get(id)) : undefined, mine.get(id), t));
     });
     // Entries I have that the server doesn't: genuinely new locally → keep.
     // But if the BASE had it, someone else deleted it — don't resurrect a deleted card.
