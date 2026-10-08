@@ -5,6 +5,25 @@
 -- ============================================================
 begin;
 
+-- 0. Nenhuma outra regra pode deixar a app escrever diretamente na escala antiga
+do $$
+declare extra text;
+begin
+  select string_agg(policyname || ' (' || cmd || ')', ', ') into extra
+  from pg_policies
+  where schemaname = 'public' and tablename = 'app_data'
+    and cmd in ('ALL', 'INSERT', 'UPDATE', 'DELETE')
+    and policyname not in ('app_data_admin_all', 'app_data_tarefeiro_update', 'app_data_tarefeiro_insert');
+  if extra is not null then
+    raise exception 'NADA FOI ALTERADO. Há outras regras de escrita em app_data: %. Envie esta mensagem.', extra;
+  end if;
+  if (select count(*) from pg_policies where schemaname = 'public' and tablename = 'app_data'
+        and policyname in ('app_data_tarefeiro_update', 'app_data_tarefeiro_insert')
+        and coalesce(qual, '') || coalesce(with_check, '') not like '%chbv_terceiros%') > 0 then
+    raise exception 'NADA FOI ALTERADO. As regras dos tarefeiros não estão limitadas a chbv_terceiros.';
+  end if;
+end $$;
+
 -- 1. Cópia de segurança antes da mudança
 select public._snapshot_state('Antes de passar a escala para o modo novo');
 insert into public.app_data_archive (key, value, note)

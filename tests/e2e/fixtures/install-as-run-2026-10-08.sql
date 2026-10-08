@@ -146,9 +146,6 @@ create or replace function public._set_cells(p_items jsonb, p_label text, p_batc
 returns int language plpgsql security definer set search_path = public as $$
 declare it record; cur text[]; n int := 0; nm text; removed int := 0;
 begin
-  -- One writer at a time: everything that changes the schedule locks this row first,
-  -- so revisions follow commit order and two changes can never deadlock.
-  perform 1 from app_data where key = 'chbv_schedules' for update;
   select name into nm from profiles where id = auth.uid();
   -- cópia de segurança se esta operação remove 4 ou mais turnos
   select coalesce(sum(greatest(cardinality(coalesce(sc.people, '{}')) - cardinality(i.people), 0)), 0) into removed
@@ -158,10 +155,7 @@ begin
     perform _snapshot_state(format('Antes de %s (remove %s turnos)', lower(p_label), removed));
   end if;
 
-  for it in select * from jsonb_to_recordset(p_items) as i(day date, shift text, people text[])
-            order by day, shift loop
-    insert into schedule_cells (day, shift, people, rev) values (it.day, it.shift, '{}', 0)
-      on conflict (day, shift) do nothing;
+  for it in select * from jsonb_to_recordset(p_items) as i(day date, shift text, people text[]) loop
     select people into cur from schedule_cells where day = it.day and shift = it.shift for update;
     cur := coalesce(cur, '{}');
     if cur is distinct from it.people then
@@ -212,7 +206,6 @@ begin
   if (select value from app_settings where key = 'schedule_store') <> 'cells' then
     raise exception 'a escala ainda não está no modo novo';
   end if;
-  perform 1 from app_data where key = 'chbv_schedules' for update;   -- one writer at a time
   select name into nm from profiles where id = auth.uid();
 
   select coalesce(sum(greatest(cardinality(coalesce(sc.people, '{}')) - cardinality(c.people), 0)), 0) into removed
@@ -232,10 +225,6 @@ begin
       out := out || jsonb_build_object('op_id', ch.op_id, 'status', 'duplicate');
       continue;
     end if;
-    -- Reserve the row first: for a shift that never existed, two simultaneous edits
-    -- would otherwise both see "empty" and the second would silently replace the first.
-    insert into schedule_cells (day, shift, people, rev) values (ch.day, ch.shift, '{}', 0)
-      on conflict (day, shift) do nothing;
     select people into cur from schedule_cells where day = ch.day and shift = ch.shift for update;
     cur := coalesce(cur, '{}');
     if cur is distinct from ch.expected then
@@ -274,12 +263,11 @@ returns int language plpgsql security definer set search_path = public as $$
 declare e record; cur text[]; batch uuid := gen_random_uuid(); n int := 0; items jsonb := '[]'::jsonb;
 begin
   perform _require_admin();
-  perform 1 from app_data where key = 'chbv_schedules' for update;   -- one writer at a time
   for e in select * from schedule_log
            where (p_whole_batch and batch_id = (select batch_id from schedule_log where id = p_log_id))
               or id = p_log_id
            order by id desc loop
-    select people into cur from schedule_cells where day = e.day and shift = e.shift for update;
+    select people into cur from schedule_cells where day = e.day and shift = e.shift;
     if coalesce(cur, '{}') is distinct from e.after then
       raise exception 'Não é possível desfazer: o turno % % foi alterado depois desta alteração.',
         to_char(e.day, 'DD/MM'), case e.shift when 'day' then 'diurno' else 'noturno' end;
@@ -393,13 +381,11 @@ begin
     select day, shift, people, nextval('public.schedule_rev')
     from public._blob_cells((select value::jsonb from public.app_data where key = 'chbv_schedules'))
     where cardinality(people) > 0;
-    select count(*) into diffs from public._cells_vs_blob();
-    if diffs > 0 then
-      raise exception 'VERIFICAÇÃO FALHOU: % turnos diferentes entre a escala e a cópia. Nada foi instalado.', diffs;
-    end if;
   end if;
-  -- On a re-run, differences are expected (the app kept editing the old storage);
-  -- the switch-over (schedule-log-cutover.sql) brings them across and re-verifies.
+  select count(*) into diffs from public._cells_vs_blob();
+  if diffs > 0 then
+    raise exception 'VERIFICAÇÃO FALHOU: % turnos diferentes entre a escala e a cópia. Nada foi instalado.', diffs;
+  end if;
 end $$;
 
 -- 8. Relatório (para conferir)
@@ -407,10 +393,7 @@ select 'turnos copiados' as item, count(*)::text as valor from public.schedule_c
 union all
 select 'vagas preenchidas', sum(cardinality(people))::text from public.schedule_cells
 union all
-select case when (select value from public.app_settings where key = 'schedule_store') = 'cells'
-            then 'diferenças (tem de ser 0)'
-            else 'alterações feitas desde a instalação (a mudança traz estas)' end,
-       count(*)::text from public._cells_vs_blob()
+select 'diferenças (tem de ser 0)', count(*)::text from public._cells_vs_blob()
 union all
 select 'entradas antigas que a app não mostra (ficam guardadas, não copiadas)',
        count(*)::text from public._blob_orphans((select value::jsonb from public.app_data where key = 'chbv_schedules'))

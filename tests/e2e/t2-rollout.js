@@ -10,7 +10,8 @@ const settle = async p => { await p.waitForFunction(() => !_saveTimer && !_saveI
 const out = []; const ok = (n, c, x = '') => out.push(`${c ? 'PASS' : 'FAIL'}  ${n}${x ? '  — ' + x : ''}`);
 (async () => {
   execSync(__dirname + '/run-setup.sh');
-  execSync(`psql -q -h /var/tmp/pgt -p 5499 -U postgres -d p1 -1 -f ${NEW}/supabase/schedule-log-install.sql`);
+  // production path: step 3 as it was actually run on 2026-10-08, then the function update
+  execSync(`psql -q -h /var/tmp/pgt -p 5499 -U postgres -d p1 -1 -f ${__dirname}/fixtures/install-as-run-2026-10-08.sql`);
   fs.writeFileSync(APPFILE, LIVE);                       // today's live app
   const browser = await chromium.launch();
 
@@ -37,6 +38,10 @@ const out = []; const ok = (n, c, x = '') => out.push(`${c ? 'PASS' : 'FAIL'}  $
   ok('R4 new app Histórico (blob mode) lists database backups with reasons', /Cópia inicial|Automática/.test(hist), hist.slice(0, 90).replace(/\s+/g, ' '));
   await N.page.evaluate(() => closeHistoryModal());
 
+  execSync(`psql -q -h /var/tmp/pgt -p 5499 -U postgres -d p1 -1 -f ${NEW}/supabase/schedule-log-update.sql`);
+  // a second new-app tab that will not notice the switch-over by itself (no auto-refresh)
+  const M = await openApp(browser, ADMIN);
+  await M.page.evaluate(() => stopAutoRefresh());
   // the old tab goes offline with an unsaved edit
   await O.page.route('**/api', r => r.abort());
   await O.page.evaluate(() => { setAssignedForShift(parseDateKey('2026-11-07'), 'day', ['d2']); save(); });
@@ -49,6 +54,18 @@ const out = []; const ok = (n, c, x = '') => out.push(`${c ? 'PASS' : 'FAIL'}  $
     sql("select count(*) from schedule_log where label = 'Sincronização com a app antiga'") === '2' &&
     sql("select people::text from schedule_cells where day='2026-11-04' and shift='day'") === '{d2}',
     'sync rows=' + sql("select count(*) from schedule_log where label = 'Sincronização com a app antiga'"));
+
+  // RV8: the unaware new-app tab saves an edit after the switch-over: refused, so it
+  // reloads into the new mode by itself and its edit is applied
+  const reloaded = M.page.waitForEvent('load', { timeout: 30000 });
+  await M.page.evaluate(() => { setAssignedForShift(parseDateKey('2026-11-08'), 'night', ['d2']); save(); });
+  await reloaded;
+  await M.page.waitForFunction(() => typeof currentRole !== 'undefined' && currentRole !== null, null, { timeout: 15000 });
+  await M.page.waitForTimeout(1500);
+  await M.page.waitForFunction(() => typeof _scheduleMode !== 'undefined' && _scheduleMode === 'cells' && !_saveTimer && !_saveInFlight, null, { timeout: 30000 });
+  ok('R6b tab that missed the switch reloads itself when its save is refused; edit applied',
+    sql("select people::text from schedule_cells where day='2026-11-08' and shift='night'") === '{d2}' &&
+    sql("select count(*) from schedule_log where day='2026-11-08' and shift='night'") === '1');
 
   // the new-app tab notices and reloads itself into the new mode
   await N.page.evaluate(() => refreshFromServer()).catch(() => {});

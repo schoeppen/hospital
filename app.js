@@ -170,6 +170,7 @@ function mergeKey(key, theirsRaw) {
 let _scheduleMode = 'blob';
 let _scheduleRev = null;
 let _saveLabel = null;                  // what the next save is, e.g. 'Auto-preencher'
+let _saveGen = 0;                       // bumped by every save, so a refresh can tell it overlapped one
 const _pendingOps = new Map();          // shiftKey -> { op_id, expected, people } (same id on retries)
 
 function setSaveLabel(label) { _saveLabel = label; }
@@ -237,7 +238,18 @@ async function saveScheduleCells() {
     const changes = [];
     new Set([...Object.keys(base), ...Object.keys(mine)]).forEach(sk => {
         const expected = base[sk] || [], people = mine[sk] || [];
-        if (_sameIds(expected, people)) { _pendingOps.delete(sk); return; }
+        if (_sameIds(expected, people)) {
+            // Back to the saved value locally. If an earlier send of this shift was never
+            // confirmed (reply lost), it may have been applied: undo it on the server too.
+            // If it wasn't, the server answers "conflict" with the value we want anyway.
+            const sent = _pendingOps.get(sk);
+            if (sent && !_sameIds(sent.people, people)) {
+                const op = { op_id: newOpId(), expected: [...sent.people], people: [...people], resolving: true };
+                _pendingOps.set(sk, op);
+                changes.push({ op_id: op.op_id, day: sk.slice(0, 10), shift: sk.slice(11), expected: op.expected, people: op.people, resolving: true });
+            } else _pendingOps.delete(sk);
+            return;
+        }
         let op = _pendingOps.get(sk);
         if (!op || !_sameIds(op.expected, expected) || !_sameIds(op.people, people)) {
             op = { op_id: newOpId(), expected: [...expected], people: [...people] };
@@ -247,7 +259,8 @@ async function saveScheduleCells() {
     });
     if (changes.length === 0) { _base.chbv_schedules = JSON.stringify(schedules); return null; }
 
-    const { data, error } = await db.rpc('apply_schedule_changes', { p_changes: changes, p_label: _saveLabel || 'Edição' });
+    const { data, error } = await db.rpc('apply_schedule_changes', {
+        p_changes: changes.map(({ resolving, ...c }) => c), p_label: _saveLabel || 'Edição' });
     if (error) return error;
     _saveLabel = null;
     const byOp = new Map(changes.map(c => [c.op_id, c]));
@@ -263,12 +276,13 @@ async function saveScheduleCells() {
         } else if (r.status === 'conflict') {
             // Someone changed this shift first: keep theirs. If this device has changed it
             // yet again in the meantime, that newer edit goes out on the next save.
+            // Someone else changed this shift first: their version wins, here too — even
+            // if this device changed the shift again meanwhile — and the user is told, so
+            // nobody's change is ever replaced without anyone noticing.
             const current = r.current || [];
             setCellIn(baseSched, sk, current);
-            if (_sameIds(mineNow[sk], ch.people)) {
-                setCellIn(schedules, sk, current);
-                if (!_sameIds(current, ch.people)) conflicts.push(sk);
-            }
+            setCellIn(schedules, sk, current);
+            if (!ch.resolving && (!_sameIds(current, ch.people) || !_sameIds(mineNow[sk], ch.people))) conflicts.push(sk);
         } else {
             setCellIn(baseSched, sk, ch.expected);
             setCellIn(schedules, sk, ch.expected);
@@ -306,17 +320,47 @@ async function refreshScheduleCells(data) {
     return changed;
 }
 
-// Finish any pending save, then load the schedule fresh from the server.
-async function reloadScheduleFromServer() {
-    if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; await performSave(); }
+// Refused because the schedule storage was switched (RLS on the old row, or the
+// new functions saying the new mode is not on).
+function _isStorageModeError(e) {
+    return !!e && (e.code === '42501' || /row-level security|modo novo/i.test(String(e.message || '')));
+}
+
+function _writableKeys() {
+    return currentRole === 'admin' ? Object.keys(DATA_KEYS)
+         : currentRole === 'tarefeiro' ? ['chbv_terceiros'] : [];
+}
+
+// Send everything this device still has to send. True when nothing is left pending.
+async function flushPendingSaves() {
+    for (let i = 0; i < 4; i++) {
+        while (_saveInFlight) await new Promise(r => setTimeout(r, 100));
+        const pending = _saveTimer || _retryTimer || _writableKeys().some(localChanged);
+        if (!pending) return true;
+        if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; }
+        if (_retryTimer) { clearTimeout(_retryTimer); _retryTimer = null; }
+        await performSave();
+    }
     while (_saveInFlight) await new Promise(r => setTimeout(r, 100));
+    return !(_saveTimer || _retryTimer || _writableKeys().some(localChanged));
+}
+
+async function ensureSavedOrWarn() {
+    if (await flushPendingSaves()) return true;
+    alert('Há alterações neste dispositivo que ainda não foram guardadas (ligação?).\n\n' +
+          'Espere que apareça "✓ Guardado" e tente outra vez. Nada foi alterado.');
+    return false;
+}
+
+// Load the schedule fresh from the server (call ensureSavedOrWarn first).
+async function reloadScheduleFromServer() {
     const data = await fetchScheduleCells();
     if (!data) return;
     schedules = scheduleFromCells(data.cells);
     _scheduleRev = data.rev;
     _pendingOps.clear();
     snapshotBase(['chbv_schedules']);
-    writeLocalCache(false);
+    writeLocalCache(_writableKeys().some(localChanged));
     renderAll();
 }
 
@@ -385,12 +429,14 @@ async function loadData() {
 // Pull other people's changes in without losing local edits (merged, never blind-replaced).
 async function refreshFromServer() {
     if (_saveInFlight || _saveTimer || _retryTimer || _restoring || _preview) return; // a save is mid-flight; it will merge
+    const gen = _saveGen;
     const prevMode = _scheduleMode;
     const cellData = await fetchScheduleCells();
     if (_scheduleMode !== prevMode) { location.reload(); return; }   // switched storage: start clean
     const { data, error } = await db.from('app_data').select('*');
     if (error || !data) return;
-    if (_saveInFlight || _saveTimer || _retryTimer || _restoring) return; // an edit started meanwhile
+    // A save that started (and maybe finished) while we were fetching makes this data stale.
+    if (_saveGen !== gen || _saveInFlight || _saveTimer || _retryTimer || _restoring || _preview) return;
     const blobKeys = Object.keys(DATA_KEYS).filter(k => !(k === 'chbv_schedules' && _scheduleMode === 'cells'));
     let changed = false;
     data.forEach(row => {
@@ -571,6 +617,9 @@ async function restoreHistory(id) {
     if (!confirm(`Restaurar a versão de ${quando}?\n\nTurnos preenchidos (atual → versão):\n${resumo}\n\n` +
                  `Isto substitui TODOS os dados atuais (escala, médicos, tarefeiros e rotações).`)) return;
 
+    // Finish sending this device's edits first (so the safety copy below includes them
+    // and nothing is sent after the restore). If they can't be sent, don't restore.
+    if (!await ensureSavedOrWarn()) return;
     _restoring = true;
     try {
     // A save already queued or mid-flight would land AFTER the restore and write the
@@ -774,6 +823,7 @@ async function loadMoreVersions() {
 
 async function undoVersionEdit(logId, wholeEdit) {
     if (!confirm(wholeEdit ? 'Desfazer esta alteração?' : 'Desfazer só este turno?')) return;
+    if (!await ensureSavedOrWarn()) return;
     const { error } = await db.rpc('undo_schedule_change', { p_log_id: logId, p_whole_batch: wholeEdit });
     if (error) { alert(error.message || error); return; }
     await reloadScheduleFromServer();
@@ -789,6 +839,7 @@ async function restoreVersion(hi, bi) {
 }
 
 async function _revertToLog(id) {
+    if (!await ensureSavedOrWarn()) return;
     const { error } = await db.rpc('revert_schedule_to_log', { p_id: id });
     if (error) { alert(error.message || error); return; }
     await reloadScheduleFromServer();
@@ -802,8 +853,7 @@ async function previewVersion(hi, bi) {
     const v = _versionTarget(hi, bi);
     const { data, error } = await db.rpc('get_schedule_at_log', { p_id: v.id });
     if (error) { alert(error.message || error); return; }
-    if (_saveTimer) { clearTimeout(_saveTimer); _saveTimer = null; await performSave(); }
-    while (_saveInFlight) await new Promise(r => setTimeout(r, 100));
+    if (!_preview && !await ensureSavedOrWarn()) return;
     if (!_preview) _preview = { saved: schedules };
     Object.assign(_preview, { id: v.id, when: v.when, isCurrent: v.isCurrent, changed: new Set(v.changed) });
     schedules = scheduleFromCells(data.cells);
@@ -839,6 +889,7 @@ function exitPreview(backToHistory) {
     schedules = _preview.saved;
     _preview = null;
     document.body.classList.remove('previewing');
+    if (_writableKeys().some(localChanged)) save();   // anything that was waiting goes out now
     const bar = document.getElementById('preview-banner');
     if (bar) bar.remove();
     renderAll();
@@ -922,6 +973,7 @@ function setSaveStatus(state, msg) {
 
 function save() {
     if (_preview) return;              // previewing an old version: read-only
+    _saveGen++;
     writeLocalCache(true);             // instant local backup
     setSaveStatus('saving', '⏳ A guardar...');
     if (_saveTimer)  clearTimeout(_saveTimer);
@@ -931,11 +983,13 @@ function save() {
 
 async function performSave() {
     _saveTimer = null;
+    if (_preview) return;              // showing an old version: never save it (saves resume on exit)
     if (_saveInFlight || _restoring) { // overlap (or a restore running) → re-queue
         _saveTimer = setTimeout(performSave, SAVE_DEBOUNCE_MS);
         return;
     }
     _saveInFlight = true;
+    _saveGen++;
     // Declared outside the try: the tail below reads it, and a `let` inside the block
     // is out of scope there — which threw a ReferenceError on every save that had
     // something to write, right after the upsert succeeded.
@@ -997,6 +1051,7 @@ async function performSave() {
         }
         if (!attemptErr) { lastError = null; break; }
         lastError = attemptErr;
+        if (_isStorageModeError(attemptErr)) break;     // retrying cannot help; handled below
         console.warn(`Save attempt ${attempt + 1} failed:`, lastError.message || lastError);
         if (attempt < RETRY_BACKOFF_MS.length) {
             await new Promise(r => setTimeout(r, RETRY_BACKOFF_MS[attempt]));
@@ -1005,6 +1060,13 @@ async function performSave() {
     } finally { _saveInFlight = false; }   // never wedge the session on a throw
 
     if (lastError) {
+        // Refused because the schedule storage was switched (or switched back) while this
+        // tab was open: reload into the right mode; unsaved edits are kept and replayed.
+        if (_isStorageModeError(lastError)) {
+            const prev = _scheduleMode;
+            await fetchScheduleCells().catch(() => null);
+            if (_scheduleMode !== prev) { writeLocalCache(true); location.reload(); return; }
+        }
         setSaveStatus('failed', '⚠ Falha ao guardar — vou tentar novamente');
         if (_retryTimer) clearTimeout(_retryTimer);
         _retryTimer = setTimeout(performSave, 15000);
@@ -1013,10 +1075,9 @@ async function performSave() {
 
     // An edit made while this save was running (or one whose shift was changed by
     // someone else meanwhile) still needs sending.
-    const writable = currentRole === 'admin' ? Object.keys(DATA_KEYS)
-                   : currentRole === 'tarefeiro' ? ['chbv_terceiros'] : [];
-    if (writable.some(localChanged) && !_saveTimer) {
-        _saveTimer = setTimeout(performSave, SAVE_DEBOUNCE_MS);
+    if (_writableKeys().some(localChanged)) {
+        if (!_saveTimer) _saveTimer = setTimeout(performSave, SAVE_DEBOUNCE_MS);
+        writeLocalCache(true);
         return;
     }
     writeLocalCache(false);            // clean cache, no longer pending

@@ -1,76 +1,13 @@
 -- ============================================================
--- FASE 1 — Escala por células + registo de alterações (instalação)
--- ------------------------------------------------------------
--- SÓ ACRESCENTA. Não altera nem apaga nada do que existe:
---   • cria tabelas novas (schedule_cells, schedule_log, app_settings, ...)
---   • guarda uma cópia integral de app_data em app_data_archive
---   • copia a escala para schedule_cells e VERIFICA turno a turno
--- A app continua a usar o armazenamento antigo até se correr o ficheiro
--- schedule-log-cutover.sql. Pode correr-se de novo sem problema.
--- Requer supabase-backups.sql já instalado (cópias automáticas).
+-- FASE 1 — ATUALIZAÇÃO das funções (só funções e permissões; não toca em dados)
+-- Correr depois de schedule-log-install.sql e ANTES de schedule-log-cutover.sql,
+-- e sempre que estas funções forem corrigidas. Pode correr-se várias vezes.
 -- ============================================================
 do $$ begin
-  if to_regprocedure('public._snapshot_state(text,text,jsonb)') is null then
-    raise exception 'Instale primeiro supabase-backups.sql (cópias automáticas).';
+  if to_regclass('public.schedule_cells') is null then
+    raise exception 'Corra primeiro schedule-log-install.sql.';
   end if;
 end $$;
-
--- 0. Cópia integral do que existe hoje (nunca é apagada nem alterada)
-create table if not exists public.app_data_archive (
-  archived_at timestamptz not null default now(),
-  key text not null,
-  value jsonb,
-  note text
-);
-alter table public.app_data_archive enable row level security;   -- sem políticas: invisível para a app
-insert into public.app_data_archive (key, value, note)
-select key, value::jsonb, 'Antes da instalação da Fase 1' from public.app_data;
-
--- 1. Definições (modo de armazenamento da escala: 'blob' = antigo, 'cells' = novo)
-create table if not exists public.app_settings (key text primary key, value text not null);
-insert into public.app_settings values ('schedule_store', 'blob') on conflict (key) do nothing;
-alter table public.app_settings enable row level security;
-drop policy if exists app_settings_read on public.app_settings;
-create policy app_settings_read on public.app_settings for select to authenticated using (true);
-
--- 2. Uma linha por turno (dia + diurno/noturno), pessoas pela ordem Médico 1, Médico 2
-create table if not exists public.schedule_cells (
-  day date not null,
-  shift text not null check (shift in ('day', 'night')),
-  people text[] not null default '{}',
-  rev bigint not null default 0,
-  updated_at timestamptz not null default now(),
-  updated_by uuid,
-  primary key (day, shift)
-);
-alter table public.schedule_cells enable row level security;
-drop policy if exists schedule_cells_read on public.schedule_cells;
-create policy schedule_cells_read on public.schedule_cells for select to authenticated using (true);
--- sem políticas de escrita: só as funções abaixo escrevem
-
--- 3. Registo de todas as alterações (só se acrescenta; nunca se altera nem apaga)
-create table if not exists public.schedule_log (
-  id bigserial primary key,
-  at timestamptz not null default now(),
-  by_user uuid,
-  by_name text,
-  op_id uuid unique,               -- id da edição gerado no dispositivo: repetir = não faz nada
-  batch_id uuid,                   -- edições feitas juntas (ex.: Auto-preencher)
-  label text,                      -- 'Edição', 'Auto-preencher', 'Desfazer', ...
-  day date not null,
-  shift text not null,
-  before text[] not null,
-  after text[] not null,
-  undo_of bigint references public.schedule_log(id)
-);
-create index if not exists schedule_log_at on public.schedule_log (at desc);
-create index if not exists schedule_log_cell on public.schedule_log (day, shift, at);
-alter table public.schedule_log enable row level security;
-drop policy if exists schedule_log_read_admin on public.schedule_log;
-create policy schedule_log_read_admin on public.schedule_log for select to authenticated
-  using (public.current_app_role() = 'admin');
-
-create sequence if not exists public.schedule_rev;
 
 -- 4. Funções auxiliares ------------------------------------------------------
 -- Chave de semana da app (segunda-feira 00:00 hora de Lisboa, em UTC)
@@ -384,35 +321,4 @@ grant execute on function public.undo_schedule_change(bigint, boolean) to authen
 grant execute on function public.revert_schedule_to(timestamptz) to authenticated;
 grant execute on function public.restore_schedule_from_history(bigint) to authenticated;
 
--- 7. Cópia inicial da escala para as células (só se ainda estiver vazia)
-do $$
-declare diffs int;
-begin
-  if not exists (select 1 from public.schedule_cells) then
-    insert into public.schedule_cells (day, shift, people, rev)
-    select day, shift, people, nextval('public.schedule_rev')
-    from public._blob_cells((select value::jsonb from public.app_data where key = 'chbv_schedules'))
-    where cardinality(people) > 0;
-    select count(*) into diffs from public._cells_vs_blob();
-    if diffs > 0 then
-      raise exception 'VERIFICAÇÃO FALHOU: % turnos diferentes entre a escala e a cópia. Nada foi instalado.', diffs;
-    end if;
-  end if;
-  -- On a re-run, differences are expected (the app kept editing the old storage);
-  -- the switch-over (schedule-log-cutover.sql) brings them across and re-verifies.
-end $$;
-
--- 8. Relatório (para conferir)
-select 'turnos copiados' as item, count(*)::text as valor from public.schedule_cells where cardinality(people) > 0
-union all
-select 'vagas preenchidas', sum(cardinality(people))::text from public.schedule_cells
-union all
-select case when (select value from public.app_settings where key = 'schedule_store') = 'cells'
-            then 'diferenças (tem de ser 0)'
-            else 'alterações feitas desde a instalação (a mudança traz estas)' end,
-       count(*)::text from public._cells_vs_blob()
-union all
-select 'entradas antigas que a app não mostra (ficam guardadas, não copiadas)',
-       count(*)::text from public._blob_orphans((select value::jsonb from public.app_data where key = 'chbv_schedules'))
-union all
-select 'modo da escala', value from public.app_settings where key = 'schedule_store';
+select 'funções atualizadas' as resultado;
