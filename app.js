@@ -346,39 +346,16 @@ function getDoctorRules(doc) {
 }
 
 // ---- History ----
-let lastHistorySaveTime = 0;
-const HISTORY_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
-const HISTORY_MAX_DAYS = 30;
-
-async function saveHistory() {
-    // Admins only. A snapshot carries the whole database — doctors, schedules,
-    // rotations — but a tarefeiro's copy of all that is whatever their session
-    // last loaded, so letting them write one seeds the backups with stale
-    // schedules. The delete below is admin-only in RLS anyway, so their inserts
-    // also skipped the 30-day cleanup and just piled up.
-    if (currentRole !== 'admin') return;
-    const now = Date.now();
-    if (now - lastHistorySaveTime < HISTORY_INTERVAL_MS) return;
-    lastHistorySaveTime = now;
-    await db.from('app_data_history').insert({
-        doctors, schedules, terceiros, rotations: rotationGrid
-    });
-    // Delete entries older than 30 days
-    const cutoff = new Date(now - HISTORY_MAX_DAYS * 24 * 60 * 60 * 1000).toISOString();
-    await db.from('app_data_history').delete().lt('saved_at', cutoff);
-}
+// Backups are made by the DATABASE (trigger on app_data, see backups.sql): hourly,
+// and always right before a change that removes 4+ shifts or removes a person.
+// They used to be made here, from this device's in-memory copy, which could be
+// stale — and old ones were deleted using this device's clock, so one device with
+// a wrong date could wipe every backup. Neither happens client-side any more.
 
 async function loadHistory() {
-    // The whole retention window. A limit of 50 hid older backups: every restore and
-    // every admin page load can add one, so 50 could cover just a few days.
-    const cutoff = new Date(Date.now() - HISTORY_MAX_DAYS * 24 * 60 * 60 * 1000).toISOString();
-    const { data, error } = await db.from('app_data_history')
-        .select('id, saved_at')
-        .gte('saved_at', cutoff)
-        .order('saved_at', { ascending: false })
-        .limit(1000);
-    if (error) { console.error(error); return []; }
-    return data;
+    const { data, error } = await db.rpc('list_history');
+    if (error) throw error;
+    return data || [];
 }
 
 // Filled slots per month ("YYYY-MM" -> count) in a schedules object.
@@ -393,12 +370,25 @@ function countSlotsByMonth(sched) {
     return out;
 }
 
+// A backup must look like real app data before it may replace the live data.
+function isRestorableVersion(v) {
+    const isObj = x => x && typeof x === 'object' && !Array.isArray(x);
+    if (!Array.isArray(v.doctors) || !isObj(v.schedules)) return false;
+    if (v.terceiros != null && !Array.isArray(v.terceiros)) return false;
+    return Object.values(v.schedules).every(week => isObj(week) &&
+        Object.values(week).every(ids => Array.isArray(ids) && ids.every(id => typeof id === 'string')));
+}
+
 let _restoring = false;
 async function restoreHistory(id) {
     if (_restoring) return;
     const { data, error } = await db.from('app_data_history')
         .select('*').eq('id', id).single();
     if (error || !data) { alert('Erro ao carregar versão.'); return; }
+    if (!isRestorableVersion(data)) {
+        alert('Essa versão está incompleta ou danificada e não pode ser restaurada.');
+        return;
+    }
 
     // Show what is about to change before replacing everything.
     const before = countSlotsByMonth(schedules), after = countSlotsByMonth(data.schedules);
@@ -415,13 +405,12 @@ async function restoreHistory(id) {
     if (_saveTimer)  { clearTimeout(_saveTimer);  _saveTimer = null; }
     if (_retryTimer) { clearTimeout(_retryTimer); _retryTimer = null; }
     while (_saveInFlight) await new Promise(r => setTimeout(r, 100));
-    // Save current state to history before restoring
-    lastHistorySaveTime = 0;
-    await saveHistory();
-    // Validate before overwriting live state: a malformed column used to be assigned
-    // straight in and then throw inside every hours calculation.
-    if (!Array.isArray(data.doctors) || !data.schedules || typeof data.schedules !== 'object') {
-        alert('Essa versão está incompleta e não pode ser restaurada.');
+    // Safety copy of what the SERVER holds right now, so this restore can itself be
+    // undone. If that copy can't be made, do not restore: there would be no way back.
+    const { error: snapErr } = await db.rpc('snapshot_app_data', { p_reason: 'Antes de restaurar' });
+    if (snapErr) {
+        alert('Não foi possível fazer a cópia de segurança antes de restaurar, por isso nada foi alterado.\n\n' +
+              (snapErr.message || snapErr));
         return;
     }
     const prev = { doctors, schedules, rotationGrid, terceiros };
@@ -462,11 +451,17 @@ function openHistoryModal() {
             content.innerHTML = '<p style="padding:16px;color:#7f8c8d">Sem histórico guardado ainda.</p>';
             return;
         }
+        const m1 = `${currentSchedYear}-${String(currentSchedMonth + 1).padStart(2, '0')}`;
+        const nx = new Date(currentSchedYear, currentSchedMonth + 1, 1);
+        const m2 = `${nx.getFullYear()}-${String(nx.getMonth() + 1).padStart(2, '0')}`;
+        const short = m => MONTH_NAMES[Number(m.slice(5)) - 1].slice(0, 3);
         content.innerHTML = entries.map(e => {
             const d = new Date(e.saved_at);
             const label = d.toLocaleString('pt-PT', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit' });
+            const slots = e.slots || {};
+            const counts = `${short(m1)}: ${slots[m1] || 0} · ${short(m2)}: ${slots[m2] || 0} turnos`;
             return `<div class="history-entry">
-                <span class="history-date">📅 ${label}</span>
+                <span class="history-date">📅 ${label}<br><small style="color:#7f8c8d">${esc(e.reason || 'Cópia')} — ${counts}</small></span>
                 <button class="btn btn-sm btn-primary" onclick="restoreHistory(${e.id})">Restaurar</button>
             </div>`;
         }).join('');
@@ -573,7 +568,6 @@ async function performSave() {
     if (typeof renderHoursSummary === 'function' && document.getElementById('hours-table')) {
         try { renderHoursSummary(); } catch(e) {}
     }
-    saveHistory();
 }
 
 window.addEventListener('online', () => {
