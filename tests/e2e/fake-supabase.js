@@ -12,6 +12,11 @@
       single() { st.single = true; return q; },
       upsert(rows) { st.kind = 'upsert'; st.rows = Array.isArray(rows) ? rows : [rows]; return q; },
       update(values) { st.kind = 'update'; st.values = values; return q; },
+      insert(row) { st.kind = 'insert'; st.rows = Array.isArray(row) ? row : [row]; return q; },
+      delete() { st.kind = 'delete'; return q; },
+      lt(col, val) { st.filters.push({ op: 'lt', col, val }); return q; },
+      gte(col, val) { st.filters.push({ op: 'gte', col, val }); return q; },
+      limit(n) { st.limit = n; return q; },
       then(res, rej) { return call(st).then(res, rej); },
     };
     return q;

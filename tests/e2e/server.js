@@ -5,7 +5,7 @@ const http = require('http'), fs = require('fs'), path = require('path');
 const { Pool } = require(process.env.PG_MODULE || 'pg');
 const pool = new Pool({ host: '/var/tmp/pgt', port: 5499, user: 'postgres', database: process.env.DB || 'p1' });
 pool.on('error', () => {});   // the test database is recreated between runs
-const APP = path.resolve(__dirname, '../..');
+const APP = process.env.APP_DIR || path.resolve(__dirname, '../..');
 const ident = s => { if (!/^[a-z_][a-z0-9_]*$/i.test(s)) throw new Error('bad ident ' + s); return '"' + s + '"'; };
 
 async function run(uid, fn) {
@@ -43,6 +43,7 @@ async function handle(b) {
     (b.filters || []).forEach(f => {
       if (f.op === 'eq') { vals.push(f.val); where.push(`${ident(f.col)} = $${vals.length}`); }
       if (f.op === 'in') { vals.push(f.val); where.push(`${ident(f.col)} = any($${vals.length})`); }
+      if (f.op === 'gte') { vals.push(f.val); where.push(`${ident(f.col)} >= $${vals.length}`); }
     });
     const order = b.order ? ` order by ${ident(b.order.col)} ${b.order.asc === false ? 'desc' : 'asc'}` : '';
     const r = await c.query(`select coalesce(jsonb_agg(to_jsonb(t)), '[]'::jsonb) as r from (select ${cols} from public.${ident(b.table)}${where.length ? ' where ' + where.join(' and ') : ''}${order}) t`, vals);
@@ -55,6 +56,20 @@ async function handle(b) {
       await c.query(`insert into public.${ident(b.table)} (key, value) values ($1, $2) on conflict (key) do update set value = excluded.value`, [row.key, JSON.stringify(row.value)]);
     }
     return null;
+  });
+  if (b.kind === 'insert') return run(b.uid, async c => {
+    for (const row of b.rows) {
+      const cols = Object.keys(row);
+      await c.query(`insert into public.${ident(b.table)} (${cols.map(ident).join(', ')}) values (${cols.map((_, i) => '$' + (i + 1)).join(', ')})`,
+        cols.map(k => row[k] !== null && typeof row[k] === 'object' ? JSON.stringify(row[k]) : row[k]));
+    }
+    return null;
+  });
+  if (b.kind === 'delete') return run(b.uid, async c => {
+    const f = b.filters[0];
+    const op = { lt: '<', eq: '=' }[f.op];
+    const r = await c.query(`delete from public.${ident(b.table)} where ${ident(f.col)} ${op} $1`, [f.val]);
+    return { deleted: r.rowCount };
   });
   if (b.kind === 'update') return run(b.uid, async c => {
     const sets = Object.keys(b.values), vals = sets.map(k => b.values[k]);
