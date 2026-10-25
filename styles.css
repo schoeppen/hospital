@@ -2427,53 +2427,6 @@ body:not(.role-admin) .admin-only  { display: none !important; }
 .cal-weekend .cal-week-tag { background: #e4e9f0; }
 .day-row-label .cal-week-tag { margin-left: 4px; }
 
-/* ---- Histórico de acções dos tarefeiros (admin) ---- */
-.hist-panel {
-    margin: 0 0 16px; border: 1px solid var(--border, #dfe6ee);
-    border-radius: 10px; background: #fff; overflow: hidden;
-}
-.hist-panel > summary {
-    display: flex; align-items: center; justify-content: space-between; gap: 10px;
-    padding: 11px 14px; cursor: pointer; font-weight: 600; font-size: .92rem;
-    color: #1f3d57; list-style: none;
-}
-.hist-panel > summary::-webkit-details-marker { display: none; }
-.hist-panel > summary::before {
-    content: '▸'; color: #8497a9; font-size: .8rem; transition: transform .15s ease;
-}
-.hist-panel[open] > summary::before { transform: rotate(90deg); }
-.hist-panel > summary > span:first-of-type { flex: 1; }
-.hist-count {
-    background: #eaf1f7; color: #1f5f8b; border-radius: 999px;
-    padding: 1px 9px; font-size: .78rem; font-weight: 700;
-}
-.hist-body { border-top: 1px solid var(--border, #dfe6ee); max-height: 340px; overflow-y: auto; }
-.hist-row {
-    display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap;
-    padding: 8px 14px; border-bottom: 1px solid #f0f4f8; font-size: .86rem;
-}
-.hist-row:last-child { border-bottom: none; }
-.hist-quando {
-    font-family: ui-monospace, Menlo, monospace; font-size: .78rem;
-    color: #8497a9; white-space: nowrap;
-}
-.hist-nome { font-weight: 600; color: #1f3d57; }
-.hist-acao { padding: 1px 8px; border-radius: 999px; font-size: .78rem; font-weight: 600; }
-.ac-pedido   { background: #eaf1f7; color: #1f5f8b; }
-.ac-retirado { background: #f0f2f5; color: #6b7d92; }
-.ac-aceite   { background: #e9f2ec; color: #2f6b4f; }
-.ac-recusado { background: #fbeee9; color: #a8412a; }
-.hist-turno { color: #45566a; }
-.hist-por { color: #8497a9; font-size: .78rem; }
-.hist-resto { margin: 0; padding: 9px 14px; font-size: .8rem; color: #8497a9; font-style: italic; }
-@media (max-width: 640px) {
-    .hist-row { gap: 6px; padding: 8px 11px; }
-    .hist-quando { width: 100%; }
-}
-
-.hist-vazio { margin: 0; padding: 12px 14px; font-size: .86rem; color: #6b7d92;
-              line-height: 1.55; }
-
 /* ---- Turno recusado pelo admin (vista do tarefeiro) ---- */
 .tf-chip.declined {
     background: #f4f5f7; border-color: #ccd2da; color: #6b7280;
@@ -2496,7 +2449,6 @@ body:not(.role-admin) .admin-only  { display: none !important; }
     .req-actions { gap: 10px; }
     .tf-tab { min-height: 44px; }
     .tf-chip { min-height: 48px; }
-    .hist-panel > summary { min-height: 44px; }
     .rot-24h-btn { min-height: 44px; }
 }
 .rot-24h-todos {
@@ -2663,12 +2615,7 @@ body.role-medico #img-btn { display: none !important; }
 }
 .md-year-nav:hover:not(:disabled) { border-color: var(--brand-400); color: var(--brand-600); }
 .md-year-nav:disabled { opacity: .3; cursor: default; }
-.md-year-sum { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 16px; }
-.md-ys { display: flex; align-items: baseline; gap: 8px; padding: 10px 12px; border-radius: var(--radius-md); }
-.md-ys b { font-size: 22px; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
-.md-ys span { font-size: 12.5px; font-weight: 600; }
-.md-ys.vac { background: var(--amber-light); color: var(--amber-text); }
-.md-ys.unav { background: var(--red-light); color: var(--red-text); }
+.md-year-sum { justify-content: center; margin-bottom: 14px; }
 
 .md-year-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 @media (min-width: 600px) { .md-year-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; } }
@@ -2701,12 +2648,31 @@ button.md-yd:focus-visible { outline: 2px solid var(--brand-500); outline-offset
 .md-yd.vac-p { background: #fde68a; color: var(--amber-text); font-weight: 800; }
 .md-yd.unav { background: var(--red); color: #fff; font-weight: 800; }
 .md-yd.unav-p { background: #fecaca; color: var(--red-text); font-weight: 800; }
-.md-yd.past.vac, .md-yd.past.unav, .md-yd.past.vac-p, .md-yd.past.unav-p { opacity: .5; }
+.md-yd.work-d  { background: var(--shift-day); color: #fff; font-weight: 800; }
+.md-yd.work-n  { background: var(--shift-night); color: #fff; font-weight: 800; }
+.md-yd.work-dn { background: linear-gradient(135deg, var(--shift-day) 50%, var(--shift-night) 50%); color: #fff; font-weight: 800; }
 .md-yd.sel { background: var(--amber); color: #fff; font-weight: 800; box-shadow: 0 0 0 2px #fde68a; }
-.md-ym-foot { min-height: 16px; padding: 3px 3px 0; font-size: 10.5px; font-weight: 700; color: var(--gray-500); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.md-year-legend { justify-content: center; margin-top: 16px; }
-.md-year-legend svg { color: var(--gray-400); }
-.md-sw.part { background: linear-gradient(135deg, #fde68a 50%, #fecaca 50%); border: 1.5px solid var(--gray-200); }
+.md-ym-foot { min-height: 16px; padding: 3px 3px 0; font-size: 10.5px; font-weight: 700; color: var(--gray-500); line-height: 1.35; }
+.md-year-key {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px;
+    margin: 0 0 14px; padding: 10px 12px; border-radius: var(--radius-md); background: var(--gray-50); border: 1px solid var(--gray-100);
+    font-size: 12px; color: var(--gray-700);
+}
+@media (min-width: 600px) { .md-year-key { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.md-year-key > button, .md-year-key > span { display: flex; align-items: center; gap: 7px; min-width: 0; }
+.md-year-key > button {
+    min-height: 32px; padding: 3px 6px; margin: -3px -6px; border: 1.5px solid transparent; border-radius: 8px;
+    background: none; font: inherit; color: inherit; text-align: left; cursor: pointer;
+}
+.md-year-key > button:hover { background: var(--card); border-color: var(--gray-200); }
+.md-year-key > button:focus-visible { outline: 2px solid var(--brand-500); outline-offset: 1px; }
+.md-year-key.filtering > button { opacity: .45; }
+.md-year-key.filtering > button.on { opacity: 1; background: var(--card); border-color: var(--brand-400); font-weight: 700; }
+.md-key-lock { color: var(--gray-500); }
+.md-key-hint { margin: -6px 0 14px; font-size: 12px; color: var(--gray-500); text-align: center; }
+.md-key-all { background: none; border: none; padding: 4px 2px; font: inherit; font-weight: 700; color: var(--brand-600); text-decoration: underline; cursor: pointer; }
+.md-year-key .md-yd { width: 16px; height: 16px; flex: 0 0 16px; border-radius: 4px; }
+.md-ym-lock-k { width: 16px; display: inline-flex; justify-content: center; color: var(--gray-400); }
 .md-year-note { margin: 10px 0 0; font-size: 12.5px; color: var(--gray-500); text-align: center; }
 @media (max-width: 380px) {
     .md-year { padding: 14px 10px; }
@@ -2883,6 +2849,11 @@ body.md-selecting .md-wrap { padding-bottom: 130px; }
 .ih-act.on { background: var(--red-light); color: var(--red-text); }
 .ih-act.off { background: var(--green-light); color: var(--green-text); }
 .ih-act.vac { background: var(--amber-light); color: var(--amber-text); }
+#th-panel { grid-column: 1 / -1; }   /* full width inside the tarefeiro cards grid */
+.ih-act.tp { background: var(--shift-day-light); color: var(--shift-day-text); }
+.ih-act.tr { background: var(--gray-100); color: var(--gray-600); }
+.ih-act.ok { background: var(--green-light); color: var(--green-text); }
+.ih-act.no { background: var(--red-light); color: var(--red-text); }
 .ih-what { grid-area: what; color: var(--gray-600); font-size: 13px; }
 .ih-empty, .ih-more { margin: 0; padding: 14px 16px; font-size: 13px; color: var(--gray-500); line-height: 1.5; }
 @media (max-width: 520px) {

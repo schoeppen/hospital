@@ -1363,6 +1363,9 @@ async function initAuth() {
             currentMedicoId = null;
             medicoFeriasDe = medicoFeriasAte = null;
             medicoVista = 'mes';
+            medicoFiltro.clear();
+            const mr = document.getElementById('medico-root');
+            if (mr) mr.innerHTML = '';
             stopAutoRefresh();
             document.querySelectorAll('.undo-host').forEach(h => h.remove());
             if (_undoTimer) { clearInterval(_undoTimer); _undoTimer = null; }
@@ -1457,6 +1460,7 @@ let medicoFeriasDe = null;
 let medicoFeriasAte = null;
 let medicoVista = 'mes';          // 'mes' (calendar to mark) or 'ano' (whole year overview)
 let medicoAno = new Date().getFullYear();
+const medicoFiltro = new Set();   // year view: legend categories to show (empty = all)
 
 function enterMedicoMode() {
     document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
@@ -1808,6 +1812,10 @@ function medicoAnoHtml(doc, meses, hojeDk) {
         return { f, u };
     };
     const tot = contar(ano + '-');
+    // Shifts the doctor has in the published schedule (done, if in the past)
+    const turnos = date => ({ d: getAssignedForShift(date, 'day').includes(doc.id),
+                              n: getAssignedForShift(date, 'night').includes(doc.id) });
+
     const anoAtual = new Date().getFullYear();
     const mesAtual = hojeDk.slice(0, 7);
     const editaveis = new Set(meses.filter(x => !x.fechado).map(x => x.key));
@@ -1819,10 +1827,20 @@ function medicoAnoHtml(doc, meses, hojeDk) {
             <div class="md-year-title">${ano}</div>
             <button class="md-year-nav" onclick="medicoAnoIr(1)" ${ano >= anoAtual + 1 ? 'disabled' : ''} aria-label="Ano seguinte">›</button>
         </div>
-        <div class="md-year-sum">
-            <div class="md-ys vac"><b>${tot.f}</b><span>${tot.f === 1 ? 'dia de férias' : 'dias de férias'}</span></div>
-            <div class="md-ys unav"><b>${tot.u}</b><span>${tot.u === 1 ? 'dia indisponível' : 'dias indisponível'}</span></div>
+        <div class="md-cal-sum md-year-sum">
+            <span class="vac"><b>${tot.f}</b> ${tot.f === 1 ? 'dia de férias' : 'dias de férias'}</span>
+            <span class="unav"><b>${tot.u}</b> ${tot.u === 1 ? 'dia indisponível' : 'dias indisponível'}</span>
         </div>
+        <div class="md-year-key ${medicoFiltro.size ? 'filtering' : ''}" role="group" aria-label="Legenda — toque para filtrar">
+            ${[['work-d', 'Turno de dia'], ['work-n', 'Turno de noite'], ['work-dn', 'Turno de 24h'],
+               ['vac', 'Férias'], ['vac-p', 'Férias 12h'], ['unav', 'Indisponível'], ['unav-p', 'Indisponível 12h']]
+              .map(([c, txt]) => `<button class="${medicoFiltro.has(c) ? 'on' : ''}" aria-pressed="${medicoFiltro.has(c)}"
+                    onclick="medicoFiltrar('${c}')"><i class="md-yd ${c}"></i> ${txt}</button>`).join('')}
+            <span class="md-key-lock"><i class="md-ym-lock-k">${cadeado}</i> Escala feita</span>
+        </div>
+        <div class="md-key-hint">${medicoFiltro.size
+            ? `A mostrar só o que escolheu. <button class="md-key-all" onclick="medicoFiltrar(null)">Mostrar tudo</button>`
+            : 'Toque num item da legenda para ver só esses dias.'}</div>
         <div class="md-year-grid">`;
     for (let m = 0; m < 12; m++) {
         const key = `${ano}-${String(m + 1).padStart(2, '0')}`;
@@ -1846,13 +1864,19 @@ function medicoAnoHtml(doc, meses, hojeDk) {
             const est = medicoEstadoDia(doc, dk);
             const cls = ['md-yd'];
             if ((date.getDay() + 6) % 7 >= 5) cls.push('we');
-            if (est.day === 'ferias' && est.night === 'ferias') cls.push('vac');
-            else if (est.day === 'indisp' && est.night === 'indisp') cls.push('unav');
-            else if (est.day || est.night) cls.push(est.day === 'ferias' || est.night === 'ferias' ? 'vac-p' : 'unav-p');
+            const t = fechado ? turnos(date) : { d: false, n: false };
+            const cat = t.d || t.n ? (t.d && t.n ? 'work-dn' : t.d ? 'work-d' : 'work-n')
+                : est.day === 'ferias' && est.night === 'ferias' ? 'vac'
+                : est.day === 'indisp' && est.night === 'indisp' ? 'unav'
+                : est.day || est.night ? (est.day === 'ferias' || est.night === 'ferias' ? 'vac-p' : 'unav-p')
+                : '';
+            if (cat && (!medicoFiltro.size || medicoFiltro.has(cat))) cls.push(cat);
             if (dk < hojeDk) cls.push('past');
             if (dk === hojeDk) cls.push('today');
             if (medicoFeriasDe && dk >= medicoFeriasDe && dk <= (medicoFeriasAte || medicoFeriasDe)) cls.push('sel');
-            const desc = medicoDescreve(est);
+            const desc = t.d || t.n
+                ? `${dk < hojeDk ? 'Fez' : 'Na escala:'} ${t.d && t.n ? '24 horas' : t.d ? '12 horas dia' : '12 horas noite'}`
+                : medicoDescreve(est);
             html += podeAbrir && dk >= hojeDk
                 ? `<button class="${cls.join(' ')}" onclick="medicoToque('${dk}')" title="${esc(desc)}" aria-label="${dia} de ${MONTH_NAMES[m].toLowerCase()}${desc ? ', ' + esc(desc.toLowerCase()) : ''}">${dia}</button>`
                 : `<span class="${cls.join(' ')}" title="${esc(desc)}">${dia}</span>`;
@@ -1862,12 +1886,6 @@ function medicoAnoHtml(doc, meses, hojeDk) {
         </div>`;
     }
     html += `</div>
-        <div class="md-legend md-year-legend">
-            <span><i class="md-sw vac"></i> Férias</span>
-            <span><i class="md-sw unav"></i> Indisponível</span>
-            <span><i class="md-sw part"></i> Só 12 horas</span>
-            <span>${cadeado} Escala feita</span>
-        </div>
         <p class="md-year-note">Toque num dia de um mês aberto para marcar indisponibilidade ou férias.</p>
     </div>`;
     return html;
@@ -1875,6 +1893,14 @@ function medicoAnoHtml(doc, meses, hojeDk) {
 
 window.medicoVer = function (v) {
     medicoVista = v;
+    renderMedicoView();
+};
+
+// Legend as a filter: tap to show only those days; several can be combined.
+window.medicoFiltrar = function (cat) {
+    if (!cat) medicoFiltro.clear();
+    else if (medicoFiltro.has(cat)) medicoFiltro.delete(cat);
+    else medicoFiltro.add(cat);
     renderMedicoView();
 };
 
@@ -2057,6 +2083,7 @@ function medicoToast(texto) {
 
 // ---- Admin: who marked what, and when ----
 let ihFiltro = '';
+let ihAberto = false;
 
 function quandoRelativo(iso) {
     const d = new Date(iso);
@@ -2082,7 +2109,7 @@ function renderIndispHistory() {
     eventos.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
     const semana = Date.now() - 7 * 864e5;
     const recentes = eventos.filter(e => new Date(e.ts).getTime() >= semana).length;
-    const comRegisto = doctors.filter(d => (d.indispLog || []).length).sort((a, b) => a.name.localeCompare(b.name));
+    const comRegisto = doctors.filter(d => (d.indispLog || []).length).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
     const lista = ihFiltro ? eventos.filter(e => e.doc.id === ihFiltro) : eventos;
     const MAX = 60;
     const curta = dk => {
@@ -2107,7 +2134,7 @@ function renderIndispHistory() {
         </div>`;
     }).join('');
 
-    box.innerHTML = `<details class="ih-panel" ${ihFiltro ? 'open' : ''}>
+    box.innerHTML = `<details class="ih-panel" ${ihAberto || ihFiltro ? 'open' : ''} ontoggle="ihAberto = this.open">
         <summary>
             <span class="ih-title">Indisponibilidades e férias marcadas pelos médicos</span>
             ${recentes ? `<span class="ih-badge">${recentes} nos últimos 7 dias</span>` : `<span class="ih-count">${eventos.length}</span>`}
@@ -3191,7 +3218,7 @@ function openAssignModal(dk, shift) {
     const dkTerc = dateKey(date);
     if (terceiros.length > 0) {
         html += '<div class="assign-section-label">Tarefeiros</div><ul class="assign-list">';
-        terceiros.sort((a, b) => a.name.localeCompare(b.name)).forEach(t => {
+        terceiros.sort((a, b) => (a.name || '').localeCompare(b.name || '')).forEach(t => {
             if (assigned.includes(t.id)) return;
             const avail = t.monthlyAvailability || {};
             const isAvail = avail[dkTerc] && avail[dkTerc][shift];
@@ -5391,13 +5418,6 @@ function logTerceiroAcao(terc, tipo, dk, shift, porQuem) {
     if (terc.log.length > TERC_LOG_MAX) terc.log = terc.log.slice(-TERC_LOG_MAX);
 }
 
-const ACAO_LABEL = {
-    pedido:   { txt: 'ofereceu-se',        cls: 'ac-pedido' },
-    retirado: { txt: 'retirou a oferta',   cls: 'ac-retirado' },
-    aceite:   { txt: 'aceite pelo admin',  cls: 'ac-aceite' },
-    recusado: { txt: 'recusado pelo admin', cls: 'ac-recusado' },
-};
-
 window.toggleVaga = function(dk, shift) {
     const t = terceiros.find(x => x.id === currentTerceiroId);
     if (!t) return;
@@ -5490,54 +5510,61 @@ function pendingRequestsForShift(date, shift) {
     });
 }
 
-// Every logged action across all tarefeiros, newest first. The admin could see who
-// was waiting, but not what had already happened — who offered what and when, and
-// who accepted or refused it.
+// Every logged action across all tarefeiros, newest first — same layout as the doctors'
+// panel (renderIndispHistory): relative time, name, coloured action, filter by person.
+let thFiltro = '';
+let thAberto = false;
+
 function renderTerceiroHistoryPanel() {
+    if (terceiros.length === 0) return '';
     const eventos = [];
     terceiros.forEach(t => (t.log || []).forEach(e => eventos.push({ ...e, terc: t })));
-
-    // Show the panel even with nothing in it. Hiding it made the feature invisible:
-    // the log only starts recording from the day it shipped, so an admin looking for
-    // the history right after found no trace that it existed at all.
-    if (eventos.length === 0) {
-        if (terceiros.length === 0) return '';
-        return `<details class="hist-panel">
-            <summary><span>Histórico de pedidos e confirmações</span><span class="hist-count">0</span></summary>
-            <div class="hist-body"><p class="hist-vazio">Ainda sem registos. A partir de agora fica aqui
-            tudo o que os tarefeiros fizerem — ofertas e desistências — e tudo o que os administradores
-            aceitarem ou recusarem, com a data e quem confirmou.</p></div>
-        </details>`;
-    }
     eventos.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
+    const semana = Date.now() - 7 * 864e5;
+    const recentes = eventos.filter(e => new Date(e.ts).getTime() >= semana).length;
+    const comRegisto = terceiros.filter(t => (t.log || []).length).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+    if (thFiltro && !comRegisto.some(t => t.id === thFiltro)) thFiltro = '';
+    const lista = thFiltro ? eventos.filter(e => e.terc.id === thFiltro) : eventos;
+    const MAX = 60;
+    const ACAO = {
+        pedido:   ['ofereceu-se', 'tp'],
+        retirado: ['retirou a oferta', 'tr'],
+        aceite:   ['aceite', 'ok'],
+        recusado: ['recusado', 'no'],
+    };
 
-    const MAX = 40;
-    const mostrar = eventos.slice(0, MAX);
-    const linhas = mostrar.map(e => {
-        const meta = ACAO_LABEL[e.tipo] || { txt: e.tipo, cls: '' };
+    const linhas = lista.slice(0, MAX).map(e => {
+        const [txt, cls] = ACAO[e.tipo] || [e.tipo, ''];
+        const dt = parseDateKey(e.dk);
+        const dia = isNaN(dt.getTime()) ? esc(e.dk) : `${DAYS[(dt.getDay() + 6) % 7]} ${dt.getDate()} ${MONTH_NAMES[dt.getMonth()].slice(0, 3)}`;
         const quando = new Date(e.ts);
-        const dataAcao = isNaN(quando.getTime()) ? '' :
-            `${String(quando.getDate()).padStart(2, '0')}/${String(quando.getMonth() + 1).padStart(2, '0')} ${String(quando.getHours()).padStart(2, '0')}:${String(quando.getMinutes()).padStart(2, '0')}`;
-        const turnoDt = new Date(e.dk + 'T00:00:00');
-        const turno = isNaN(turnoDt.getTime()) ? esc(e.dk) :
-            `${DAYS[(turnoDt.getDay() + 6) % 7]} ${turnoDt.getDate()} ${MONTH_NAMES[turnoDt.getMonth()].slice(0, 3)}`;
-        const porQuem = (e.tipo === 'aceite' || e.tipo === 'recusado') && e.por
-            ? `<span class="hist-por">por ${esc(e.por)}</span>` : '';
-        return `<div class="hist-row">
-            <span class="hist-quando">${dataAcao}</span>
-            <span class="hist-nome">${esc(e.terc.name)}</span>
-            <span class="hist-acao ${meta.cls}">${meta.txt}</span>
-            <span class="hist-turno">${turno} · ${e.shift === 'night' ? '🌙' : '☀️'}</span>
-            ${porQuem}
+        const titulo = isNaN(quando.getTime()) ? '' : quando.toLocaleString('pt-PT');
+        const por = (e.tipo === 'aceite' || e.tipo === 'recusado') && e.por ? ` · por ${esc(e.por)}` : '';
+        return `<div class="ih-row">
+            <span class="ih-when" title="${esc(titulo)}">${quandoRelativo(e.ts)}</span>
+            <span class="ih-name">${esc(e.terc.name)}</span>
+            <span class="ih-act ${cls}">${txt}</span>
+            <span class="ih-what">${dia} · ${e.shift === 'night' ? 'turno de noite' : 'turno de dia'}${por}</span>
         </div>`;
     }).join('');
 
-    const resto = eventos.length > MAX
-        ? `<p class="hist-resto">a mostrar as ${MAX} mais recentes de ${eventos.length}</p>` : '';
-
-    return `<details class="hist-panel">
-        <summary><span>Histórico de pedidos e confirmações</span><span class="hist-count">${eventos.length}</span></summary>
-        <div class="hist-body">${linhas}${resto}</div>
+    return `<details class="ih-panel" id="th-panel" ${thAberto || thFiltro ? 'open' : ''} ontoggle="thAberto = this.open">
+        <summary>
+            <span class="ih-title">Histórico de pedidos e confirmações</span>
+            ${recentes ? `<span class="ih-badge">${recentes} nos últimos 7 dias</span>` : `<span class="ih-count">${eventos.length}</span>`}
+        </summary>
+        <div class="ih-body">
+            ${eventos.length ? `<div class="ih-tools">
+                <label for="th-filtro">Tarefeiro</label>
+                <select id="th-filtro" onchange="thFiltro = this.value; renderTerceiros()">
+                    <option value="">Todos</option>
+                    ${comRegisto.map(t => `<option value="${esc(t.id)}" ${t.id === thFiltro ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}
+                </select>
+            </div>` : ''}
+            ${lista.length ? linhas : `<p class="ih-empty">${eventos.length ? 'Sem registos para este tarefeiro.'
+                : 'Ainda sem registos. Fica aqui tudo o que os tarefeiros fizerem — ofertas e desistências — e o que os administradores aceitarem ou recusarem, com a data e quem confirmou.'}</p>`}
+            ${lista.length > MAX ? `<p class="ih-more">A mostrar as ${MAX} mais recentes de ${lista.length}.</p>` : ''}
+        </div>
     </details>`;
 }
 
