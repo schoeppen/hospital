@@ -1362,6 +1362,7 @@ async function initAuth() {
             currentTerceiroId = null;
             currentMedicoId = null;
             medicoFeriasDe = medicoFeriasAte = null;
+            medicoVista = 'mes';
             stopAutoRefresh();
             document.querySelectorAll('.undo-host').forEach(h => h.remove());
             if (_undoTimer) { clearInterval(_undoTimer); _undoTimer = null; }
@@ -1454,6 +1455,8 @@ let medicoMesSel = null;          // 'YYYY-MM' of the month shown
 // Choosing a period of férias on the calendar itself: first day, then tap the last day.
 let medicoFeriasDe = null;
 let medicoFeriasAte = null;
+let medicoVista = 'mes';          // 'mes' (calendar to mark) or 'ano' (whole year overview)
+let medicoAno = new Date().getFullYear();
 
 function enterMedicoMode() {
     document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
@@ -1504,7 +1507,7 @@ function medicoDescreve(est) {
     if (est.day === 'indisp' && est.night === 'indisp') return 'Indisponível, 24 horas';
     if (!est.day !== !est.night) {          // just one shift marked
         const turno = est.day ? '12 horas dia' : '12 horas noite';
-        return (est.day || est.night) === 'ferias' ? `Férias, ${turno.toLowerCase()}` : turno;
+        return `${(est.day || est.night) === 'ferias' ? 'Férias' : 'Indisponível'}, ${turno}`;
     }
     const nome = { indisp: 'indisponível', ferias: 'férias' };
     const partes = [];
@@ -1559,12 +1562,6 @@ function renderMedicoView() {
     const mes = meses.find(x => x.key === medicoMesSel);
     const hojeDk = dateKey(new Date());
 
-    // Totals from today on
-    const unav = doc.monthlyUnavailability || {};
-    const vac = doc.monthlyVacation || {};
-    const nIndisp = Object.keys(unav).filter(dk => dk >= hojeDk && (unav[dk].day || unav[dk].night)
-        && !(vac[dk] && vac[dk].day && vac[dk].night)).length;
-    const nFerias = Object.keys(vac).filter(dk => dk >= hojeDk && (vac[dk].day || vac[dk].night)).length;
 
     const primeiro = (doc.name || '').trim().split(/\s+/)[0] || '';
     const saud = /a$/i.test(primeiro) ? 'Bem-vinda' : 'Bem-vindo';
@@ -1572,16 +1569,22 @@ function renderMedicoView() {
     let html = `<div class="md-wrap">
         <div class="md-hero">
             <div class="md-hello">${saud}, <strong>${esc(primeiro)}</strong></div>
-            <p class="md-sub">Toque num dia para marcar que não pode trabalhar ou que está de férias.
-            O resto do seu horário é definido pela rotação do serviço.</p>
-            <div class="md-stats">
-                <div class="md-stat"><span class="md-n">${nIndisp}</span>
-                    <span class="md-l">${nIndisp === 1 ? 'dia indisponível' : 'dias indisponível'}</span></div>
-                <div class="md-stat"><span class="md-n">${nFerias}</span>
-                    <span class="md-l">${nFerias === 1 ? 'dia de férias' : 'dias de férias'}</span></div>
-            </div>
+            <p class="md-sub">Toque num dia para marcar indisponibilidade ou férias.</p>
         </div>
 
+        <div class="md-views" role="tablist" aria-label="Vista">
+            <button role="tab" class="${medicoVista === 'mes' ? 'active' : ''}" aria-selected="${medicoVista === 'mes'}" onclick="medicoVer('mes')">Mês</button>
+            <button role="tab" class="${medicoVista === 'ano' ? 'active' : ''}" aria-selected="${medicoVista === 'ano'}" onclick="medicoVer('ano')">Ano inteiro</button>
+        </div>`;
+
+    if (medicoVista === 'ano') {
+        html += medicoAnoHtml(doc, meses, hojeDk) + `</div>` + medicoSelBarHtml(doc, meses);
+        root.innerHTML = html;
+        document.body.classList.toggle('md-selecting', !!medicoFeriasDe);
+        return;
+    }
+
+    html += `
         <div class="md-months" role="tablist" aria-label="Meses">`;
     meses.forEach(x => {
         html += `<button class="md-month ${x.key === medicoMesSel ? 'active' : ''} ${x.fechado ? 'closed' : ''}"
@@ -1600,7 +1603,20 @@ function renderMedicoView() {
         </div>`;
     }
 
-    html += `<div class="md-cal-title">${MONTH_NAMES[mes.m]} ${mes.y}</div>
+    // This month's totals (same counting as the year view)
+    let mFer = 0, mInd = 0;
+    for (let dia = 1, n = new Date(mes.y, mes.m + 1, 0).getDate(); dia <= n; dia++) {
+        const e = medicoEstadoDia(doc, dateKey(new Date(mes.y, mes.m, dia)));
+        if (e.day === 'ferias' || e.night === 'ferias') mFer++;
+        else if (e.day || e.night) mInd++;
+    }
+    html += `<div class="md-cal-head">
+            <div class="md-cal-title">${MONTH_NAMES[mes.m]} ${mes.y}</div>
+            <div class="md-cal-sum">
+                <span class="vac"><b>${mFer}</b> ${mFer === 1 ? 'dia de férias' : 'dias de férias'}</span>
+                <span class="unav"><b>${mInd}</b> ${mInd === 1 ? 'dia indisp.' : 'dias indisp.'}</span>
+            </div>
+        </div>
         <div class="md-cal" role="grid">`;
     DAYS.forEach((d, i) => { html += `<div class="md-dow ${i >= 5 ? 'we' : ''}">${d}</div>`; });
 
@@ -1629,12 +1645,15 @@ function renderMedicoView() {
             tag = est.day && est.night ? 'D+N' : est.day ? 'Dia' : 'Noite';
         }
         if ((date.getDay() + 6) % 7 >= 5) cls.push('we');
+        if (!tag && (prevD || prevN)) cls.push('has-shift');
         if (medicoFeriasDe) {
             const fim = medicoFeriasAte || medicoFeriasDe;
             if (dk >= medicoFeriasDe && dk <= fim) cls.push('vac-sel');
             if (dk === medicoFeriasDe) cls.push('vac-start');
             if (dk === fim) cls.push('vac-end');
         }
+        // A shift the rotation gives them that they've now marked as absent: show it struck out
+        const faltaD = prevD && !!est.day, faltaN = prevN && !!est.night;
         const desc = medicoDescreve(est);
         const aria = `${DAYS_FULL[(date.getDay() + 6) % 7]} ${dia}` +
             (desc ? `, ${desc.toLowerCase()}` : '') +
@@ -1642,15 +1661,19 @@ function renderMedicoView() {
         html += `<button class="${cls.join(' ')}" ${editavel ? `onclick="medicoToque('${dk}')"` : 'disabled'}
             aria-label="${esc(aria)}">
             <span class="md-num">${dia}</span>
-            <span class="md-prev">${prevD ? '<i class="pd">D</i>' : ''}${prevN ? '<i class="pn">N</i>' : ''}</span>
-            ${tag ? `<span class="md-tag">${tag}</span>` : ''}
+            ${faltaD || faltaN
+                ? `<span class="md-shift off ${faltaD && faltaN ? 'dn' : faltaD ? 'd' : 'n'}">${faltaD && faltaN ? '24h' : faltaD ? 'Dia' : 'Noite'}</span>`
+                : tag ? `<span class="md-tag">${tag}</span>`
+                : prevD && prevN ? `<span class="md-shift dn">24h</span>`
+                : prevD ? `<span class="md-shift d">Dia</span>`
+                : prevN ? `<span class="md-shift n">Noite</span>` : ''}
         </button>`;
     }
     html += `</div>
         <div class="md-legend">
+            <span><span class="md-shift d">Dia</span><span class="md-shift n">Noite</span> Turno previsto na rotação</span>
             <span><i class="md-sw unav"></i> Indisponível</span>
             <span><i class="md-sw vac"></i> Férias</span>
-            <span><i class="pd">D</i><i class="pn">N</i> Turno previsto na sua rotação</span>
         </div>
     </div>`;
 
@@ -1699,36 +1722,40 @@ function renderMedicoView() {
     }
     html += `</div></div>`;
 
-    // Action bar while choosing a period of férias on the calendar
-    if (medicoFeriasDe) {
-        const de = medicoFeriasDe, ate = medicoFeriasAte || medicoFeriasDe;
-        const n = medicoNDias(de, ate);
-        const fechado = meses.find(x => x.fechado && x.key >= de.slice(0, 7) && x.key <= ate.slice(0, 7));
-        let comIndisp = 0;
-        for (let k = de; k <= ate; k = medicoMaisDias(k, 1)) {
-            const e = medicoEstadoDia(doc, k);
-            if (e.day === 'indisp' || e.night === 'indisp') comIndisp++;
-        }
-        const erro = n > 62 ? 'Marque no máximo 62 dias de cada vez.'
-            : fechado ? `A escala de ${MONTH_NAMES[fechado.m]} já foi feita — escolha um último dia antes disso.` : '';
-        const nota = !medicoFeriasAte
-            ? 'Toque no último dia de férias. Pode mudar de mês nos separadores acima.'
-            : comIndisp ? `${comIndisp === 1 ? 'Um dia marcado' : comIndisp + ' dias marcados'} como indisponível passa${comIndisp === 1 ? '' : 'm'} a férias.` : '';
-        html += `<div class="md-selbar" role="region" aria-label="Escolher período de férias">
-            <div class="md-selbar-txt">
-                <strong>Férias: ${medicoIntervalo(de, ate)}${n > 1 ? ` · ${n} dias` : ''}</strong>
-                ${erro ? `<span class="err">${erro}</span>` : nota ? `<span>${nota}</span>` : ''}
-            </div>
-            <div class="md-selbar-btns">
-                <button class="md-selbar-cancel" onclick="medicoFeriasCancelar()">Cancelar</button>
-                <button class="md-selbar-ok" onclick="medicoFeriasConfirmar(this)" ${erro ? 'disabled' : ''}>
-                    ${medicoFeriasAte ? 'Confirmar férias' : 'Só este dia'}</button>
-            </div>
-        </div>`;
-    }
+    html += medicoSelBarHtml(doc, meses);
 
     root.innerHTML = html;
     document.body.classList.toggle('md-selecting', !!medicoFeriasDe);
+}
+
+// Action bar while choosing a period of férias (month or year view)
+function medicoSelBarHtml(doc, meses) {
+    if (!medicoFeriasDe) return '';
+
+    const de = medicoFeriasDe, ate = medicoFeriasAte || medicoFeriasDe;
+    const n = medicoNDias(de, ate);
+    const fechado = meses.find(x => x.fechado && x.key >= de.slice(0, 7) && x.key <= ate.slice(0, 7));
+    let comIndisp = 0;
+    for (let k = de; k <= ate; k = medicoMaisDias(k, 1)) {
+        const e = medicoEstadoDia(doc, k);
+        if (e.day === 'indisp' || e.night === 'indisp') comIndisp++;
+    }
+    const erro = n > 62 ? 'Marque no máximo 62 dias de cada vez.'
+        : fechado ? `A escala de ${MONTH_NAMES[fechado.m]} já foi feita — escolha um último dia antes disso.` : '';
+    const nota = !medicoFeriasAte
+        ? medicoVista === 'ano' ? 'Toque no último dia de férias.' : 'Toque no último dia de férias (pode mudar de mês nos separadores acima).'
+        : comIndisp ? `${comIndisp === 1 ? 'Um dia marcado' : comIndisp + ' dias marcados'} como indisponível passa${comIndisp === 1 ? '' : 'm'} a férias.` : '';
+    return `<div class="md-selbar" role="region" aria-label="Escolher período de férias">
+        <div class="md-selbar-txt">
+            <strong>Férias: ${medicoIntervalo(de, ate)}${n > 1 ? ` · ${n} dias` : ''}</strong>
+            ${erro ? `<span class="err">${erro}</span>` : nota ? `<span>${nota}</span>` : ''}
+        </div>
+        <div class="md-selbar-btns">
+            <button class="md-selbar-cancel" onclick="medicoFeriasCancelar()">Cancelar</button>
+            <button class="md-selbar-ok" onclick="medicoFeriasConfirmar(this)" ${erro ? 'disabled' : ''}>
+                ${medicoFeriasAte ? 'Confirmar férias' : 'Só este dia'}</button>
+        </div>
+    </div>`;
 }
 
 // A tap on a day: normally opens the day sheet; while choosing férias, it sets the last day.
@@ -1762,6 +1789,100 @@ window.medicoFeriasConfirmar = async function (btn) {
     renderMedicoView();
     medicoToast(`Férias marcadas: ${medicoIntervalo(de, ate)}`);
 };
+
+// Whole year at a glance: 12 small months, férias / indisponível coloured, totals on top.
+function medicoAnoHtml(doc, meses, hojeDk) {
+    const ano = medicoAno;
+    const unav = doc.monthlyUnavailability || {};
+    const vac = doc.monthlyVacation || {};
+    // Same counting as the month view: a day with any férias counts as férias, otherwise
+    // any marked shift counts as indisponível.
+    const contar = prefixo => {
+        let f = 0, u = 0;
+        new Set([...Object.keys(unav), ...Object.keys(vac)]).forEach(dk => {
+            if (!dk.startsWith(prefixo)) return;
+            const e = medicoEstadoDia(doc, dk);
+            if (e.day === 'ferias' || e.night === 'ferias') f++;
+            else if (e.day || e.night) u++;
+        });
+        return { f, u };
+    };
+    const tot = contar(ano + '-');
+    const anoAtual = new Date().getFullYear();
+    const mesAtual = hojeDk.slice(0, 7);
+    const editaveis = new Set(meses.filter(x => !x.fechado).map(x => x.key));
+    const cadeado = '<svg viewBox="0 0 24 24" width="11" height="11" aria-hidden="true"><path fill="currentColor" d="M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5Zm-3 8V7a3 3 0 1 1 6 0v3H9Z"/></svg>';
+
+    let html = `<div class="md-card md-year">
+        <div class="md-year-head">
+            <button class="md-year-nav" onclick="medicoAnoIr(-1)" ${ano <= anoAtual ? 'disabled' : ''} aria-label="Ano anterior">‹</button>
+            <div class="md-year-title">${ano}</div>
+            <button class="md-year-nav" onclick="medicoAnoIr(1)" ${ano >= anoAtual + 1 ? 'disabled' : ''} aria-label="Ano seguinte">›</button>
+        </div>
+        <div class="md-year-sum">
+            <div class="md-ys vac"><b>${tot.f}</b><span>${tot.f === 1 ? 'dia de férias' : 'dias de férias'}</span></div>
+            <div class="md-ys unav"><b>${tot.u}</b><span>${tot.u === 1 ? 'dia indisponível' : 'dias indisponível'}</span></div>
+        </div>
+        <div class="md-year-grid">`;
+    for (let m = 0; m < 12; m++) {
+        const key = `${ano}-${String(m + 1).padStart(2, '0')}`;
+        const fechado = monthHasSchedule(ano, m);
+        const podeAbrir = editaveis.has(key);
+        const c = contar(key + '-');
+        const resumo = [c.f ? `Férias ${c.f}` : '', c.u ? `Indisp. ${c.u}` : ''].filter(Boolean).join(' · ');
+        html += `<div class="md-ym ${key === mesAtual ? 'current' : ''} ${key < mesAtual ? 'gone' : ''}" role="group" aria-label="${MONTH_NAMES[m]} ${ano}">
+            <div class="md-ym-head">
+                <span class="md-ym-name">${MONTH_NAMES[m]}</span>
+                ${fechado ? `<span class="md-ym-lock" title="Escala feita">${cadeado}</span>` : ''}
+            </div>
+            <div class="md-ym-grid">`;
+        DAYS.forEach((d, i) => { html += `<span class="md-ym-dow ${i >= 5 ? 'we' : ''}">${d[0]}</span>`; });
+        const pad = (new Date(ano, m, 1).getDay() + 6) % 7;
+        for (let i = 0; i < pad; i++) html += `<span></span>`;
+        const n = new Date(ano, m + 1, 0).getDate();
+        for (let dia = 1; dia <= n; dia++) {
+            const date = new Date(ano, m, dia);
+            const dk = dateKey(date);
+            const est = medicoEstadoDia(doc, dk);
+            const cls = ['md-yd'];
+            if ((date.getDay() + 6) % 7 >= 5) cls.push('we');
+            if (est.day === 'ferias' && est.night === 'ferias') cls.push('vac');
+            else if (est.day === 'indisp' && est.night === 'indisp') cls.push('unav');
+            else if (est.day || est.night) cls.push(est.day === 'ferias' || est.night === 'ferias' ? 'vac-p' : 'unav-p');
+            if (dk < hojeDk) cls.push('past');
+            if (dk === hojeDk) cls.push('today');
+            if (medicoFeriasDe && dk >= medicoFeriasDe && dk <= (medicoFeriasAte || medicoFeriasDe)) cls.push('sel');
+            const desc = medicoDescreve(est);
+            html += podeAbrir && dk >= hojeDk
+                ? `<button class="${cls.join(' ')}" onclick="medicoToque('${dk}')" title="${esc(desc)}" aria-label="${dia} de ${MONTH_NAMES[m].toLowerCase()}${desc ? ', ' + esc(desc.toLowerCase()) : ''}">${dia}</button>`
+                : `<span class="${cls.join(' ')}" title="${esc(desc)}">${dia}</span>`;
+        }
+        html += `</div>
+            <div class="md-ym-foot">${resumo || (fechado ? 'Escala feita' : '&nbsp;')}</div>
+        </div>`;
+    }
+    html += `</div>
+        <div class="md-legend md-year-legend">
+            <span><i class="md-sw vac"></i> Férias</span>
+            <span><i class="md-sw unav"></i> Indisponível</span>
+            <span><i class="md-sw part"></i> Só 12 horas</span>
+            <span>${cadeado} Escala feita</span>
+        </div>
+        <p class="md-year-note">Toque num dia de um mês aberto para marcar indisponibilidade ou férias.</p>
+    </div>`;
+    return html;
+}
+
+window.medicoVer = function (v) {
+    medicoVista = v;
+    renderMedicoView();
+};
+
+window.medicoAnoIr = function (delta) {
+    medicoAno += delta;
+    renderMedicoView();
+};
+
 
 window.medicoMes = function (key) {
     medicoMesSel = key;
