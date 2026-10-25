@@ -1501,9 +1501,9 @@ function medicoEstadoDia(doc, dk) {
 
 function medicoDescreve(est) {
     if (est.day === 'ferias' && est.night === 'ferias') return 'Férias';
-    if (est.day === 'indisp' && est.night === 'indisp') return 'Indisponível, dia inteiro';
+    if (est.day === 'indisp' && est.night === 'indisp') return 'Indisponível, 24 horas';
     if (!est.day !== !est.night) {          // just one shift marked
-        const turno = est.day ? 'Turno de dia' : 'Turno de noite';
+        const turno = est.day ? '12 horas dia' : '12 horas noite';
         return (est.day || est.night) === 'ferias' ? `Férias, ${turno.toLowerCase()}` : turno;
     }
     const nome = { indisp: 'indisponível', ferias: 'férias' };
@@ -1835,11 +1835,11 @@ window.medicoAbrir = function (dk) {
         <p class="md-sheet-q">Em que turno não pode trabalhar?</p>
         <div class="md-opts">
             <button class="md-opt ${atual === 'both' ? 'sel' : ''}" data-v="both">
-                <b>Dia inteiro</b><span>Não posso trabalhar neste dia</span></button>
+                <b>24 horas</b><span>Dia e noite · 08:30–08:30</span></button>
             <button class="md-opt ${atual === 'day' ? 'sel' : ''}" data-v="day">
-                <b>Só o turno de dia</b><span>${SHIFT_TIMES.day}</span></button>
+                <b>12 horas dia</b><span>${SHIFT_TIMES.day}</span></button>
             <button class="md-opt ${atual === 'night' ? 'sel' : ''}" data-v="night">
-                <b>Só o turno de noite</b><span>${SHIFT_TIMES.night}</span></button>
+                <b>12 horas noite</b><span>${SHIFT_TIMES.night}</span></button>
         </div>
         <div class="md-or"><span>ou</span></div>
         <div class="md-opts">
