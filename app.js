@@ -25,6 +25,9 @@ const LOCAL_CACHE_KEY = 'chbv_local_cache';
 const LOCAL_CACHE_MAX_AGE_MS = 8 * 60 * 60 * 1000; // 8h
 
 function writeLocalCache(pending) {
+    // Accounts that can't write (leitura, médico) have nothing to keep — and must never
+    // overwrite another user's pending edits left on this device.
+    if (currentRole && !_writableKeys().length) return;
     try {
         localStorage.setItem(LOCAL_CACHE_KEY, JSON.stringify({
             version: 2, timestamp: Date.now(), pending,
@@ -90,13 +93,42 @@ function mergeById(baseArr, mineArr, theirsArr, idOf) {
             return;
         }
         const iChangedIt = JSON.stringify(mine.get(id)) !== base.get(id);
-        out.push(iChangedIt ? mine.get(id) : t);
+        out.push(iChangedIt ? mergeRecord(base.has(id) ? JSON.parse(base.get(id)) : null, mine.get(id), t) : t);
     });
     // Entries I have that the server doesn't: genuinely new locally → keep.
     // But if the BASE had it, someone else deleted it — don't resurrect a deleted card.
     (mineArr || []).forEach(m => {
         const id = idOf(m);
         if (!seen.has(id) && !base.has(id)) out.push(m);
+    });
+    return out;
+}
+
+// Per-date maps ({ 'YYYY-MM-DD': {day, night} }) are merged date by date, so a doctor
+// marking their own unavailability / férias (medico_ausencia) while the admin edits
+// the same card doesn't lose either change.
+const DATE_MAP_FIELDS = ['monthlyAvailability', 'monthlyUnavailability', 'monthlyVacation'];
+
+function mergeDateMap(base, mine, theirs) {
+    base = base || {}; mine = mine || {}; theirs = theirs || {};
+    const out = JSON.parse(JSON.stringify(theirs));
+    new Set([...Object.keys(base), ...Object.keys(mine)]).forEach(dk => {
+        if (JSON.stringify(mine[dk]) === JSON.stringify(base[dk])) return;   // I didn't touch it
+        if (mine[dk] === undefined) delete out[dk]; else out[dk] = mine[dk];
+    });
+    return out;
+}
+
+// One record both sides changed: fields I changed win, the rest come from the server
+// (e.g. indispLog, written only by the server).
+function mergeRecord(base, mine, theirs) {
+    if (!base || !mine || !theirs) return mine;
+    const out = { ...theirs };
+    new Set([...Object.keys(base), ...Object.keys(mine)]).forEach(k => {
+        if (JSON.stringify(mine[k]) === JSON.stringify(base[k])) return;
+        if (DATE_MAP_FIELDS.includes(k)) out[k] = mergeDateMap(base[k], mine[k], theirs[k]);
+        else if (mine[k] === undefined) delete out[k];
+        else out[k] = mine[k];
     });
     return out;
 }
@@ -327,6 +359,8 @@ function _isStorageModeError(e) {
 }
 
 function _writableKeys() {
+    // 'medico' writes nothing directly: their only change goes through the
+    // medico_ausencia server function, which touches their own record only.
     return currentRole === 'admin' ? Object.keys(DATA_KEYS)
          : currentRole === 'tarefeiro' ? ['chbv_terceiros'] : [];
 }
@@ -384,8 +418,9 @@ async function loadData() {
     if (cellData) { schedules = scheduleFromCells(cellData.cells); _scheduleRev = cellData.rev; }
 
     // Restore pending local edits that never reached the server — but only if recent.
+    // Only for an account that can write them; anyone else leaves them for their owner.
     const cache = readLocalCache();
-    if (cache && cache.pending) {
+    if (cache && cache.pending && _writableKeys().length) {
         const age = Date.now() - (cache.timestamp || 0);
         if (age > LOCAL_CACHE_MAX_AGE_MS) {
             // Someone's unsaved work is being thrown away. Saying it only to the console
@@ -454,6 +489,7 @@ async function refreshFromServer() {
 function renderAll() {
     try {
         if (currentRole === 'tarefeiro') { renderTerceiros(); return; }
+        if (currentRole === 'medico') { renderMedicoView(); return; }
         renderSchedule(); renderDoctors(); renderTerceiros(); renderRotations(); renderHoursSummary();
     } catch (e) { console.warn('render falhou', e); }
 }
@@ -515,6 +551,7 @@ let currentSchedYear = new Date().getFullYear();
 let modalAvailMonth = new Date().getMonth();
 let modalAvailYear = new Date().getFullYear();
 let modalAvailMode = 'available'; // 'available', 'unavailable', or 'vacation'
+let modalDatesBase = null;  // the card's per-date maps as they were when the modal opened
 let modalAvailData = {};    // days the doctor CAN work
 let modalUnavailData = {};  // days the doctor CANNOT work
 let modalVacationData = {}; // days the doctor is on vacation (férias)
@@ -535,6 +572,8 @@ let modalTercAvailYear = new Date().getFullYear();
 // Role 'tarefeiro': the terceiro card linked to the logged-in user (matched by email),
 // and a flag restricting the availability editor to shifts that still have a gap ("furo").
 let currentTerceiroId = null;
+// Role 'medico': the doctor record linked to the logged-in account (matched by email).
+let currentMedicoId = null;
 let tercFuroOnly = false;
 
 // Modal state for monthly day rules
@@ -1002,7 +1041,7 @@ async function performSave() {
     let dirtyKeys = Object.keys(DATA_KEYS).filter(localChanged);
     // A read-only account cannot write anything: RLS rejects it server-side, and
     // without this the client would retry the doomed write every 15 s forever.
-    if (currentRole === 'read') dirtyKeys = [];
+    if (currentRole === 'read' || currentRole === 'medico') dirtyKeys = [];
     // A tarefeiro may only write their own availability. RLS enforces this too, but
     // the upsert is a single statement: including any other key would make the whole
     // batch fail, silently losing the one change they're allowed to make.
@@ -1321,6 +1360,8 @@ async function initAuth() {
             currentRole = null;
             // Don't leave one user's state (or an undo banner) behind for the next
             currentTerceiroId = null;
+            currentMedicoId = null;
+            medicoFeriasDe = medicoFeriasAte = null;
             stopAutoRefresh();
             document.querySelectorAll('.undo-host').forEach(h => h.remove());
             if (_undoTimer) { clearInterval(_undoTimer); _undoTimer = null; }
@@ -1348,7 +1389,8 @@ async function onSignIn(user) {
     document.getElementById('user-name-display').textContent = displayName;
     const roleBadge = document.getElementById('user-role-badge');
     roleBadge.textContent = currentRole === 'admin' ? 'Admin'
-        : currentRole === 'tarefeiro' ? 'Tarefeiro' : 'Leitura';
+        : currentRole === 'tarefeiro' ? 'Tarefeiro'
+        : currentRole === 'medico' ? 'Médico' : 'Leitura';
     roleBadge.className = `role-badge role-badge-${currentRole}`;
     document.getElementById('user-info').style.display = 'flex';
 
@@ -1356,6 +1398,16 @@ async function onSignIn(user) {
     hideLoginScreen();
 
     await loadData();
+
+    if (currentRole === 'medico') {
+        // Link this account to the doctor's record by email — the same match the
+        // server function makes, so what the doctor sees is what they can change.
+        const mine = doctors.find(d => normEmail(d.email) === normEmail(user.email));
+        currentMedicoId = mine ? mine.id : null;
+        enterMedicoMode();
+        startAutoRefresh();
+        return;
+    }
 
     if (currentRole === 'tarefeiro') {
         // Link this user to their terceiro card by email
@@ -1390,8 +1442,575 @@ function enterTarefeiroMode() {
     renderTerceiros();
 }
 
+// =====================================================================
+// MÉDICO — marca as suas próprias indisponibilidades e férias, e nada mais.
+// Writes go through the medico_ausencia server function, which only touches the
+// caller's own monthlyUnavailability / monthlyVacation and refuses months already
+// scheduled. Because the change lands inside chbv_doctors, everything that reads them
+// (auto-fill, recovery debt — férias owe none —, conflict markers) picks it up with no
+// further wiring.
+// =====================================================================
+let medicoMesSel = null;          // 'YYYY-MM' of the month shown
+// Choosing a period of férias on the calendar itself: first day, then tap the last day.
+let medicoFeriasDe = null;
+let medicoFeriasAte = null;
+
+function enterMedicoMode() {
+    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+    document.getElementById('medico-view').classList.add('active');
+    document.getElementById('pdf-btn').style.display = 'none';
+    document.getElementById('img-btn').style.display = 'none';
+    renderMedicoView();
+}
+
+function medicoDoc() {
+    return currentMedicoId ? doctors.find(d => d.id === currentMedicoId) : null;
+}
+
+// Shifts the doctor is due by configuration (rotation first, then weekly / monthly
+// fixed). Day-of-week rules are left out: before auto-fill they are not tied to dates.
+function medicoTurnoPrevisto(doc, date, shift) {
+    const dayIdx = (date.getDay() + 6) % 7;
+    if (getRotationDoctorsForShift(dayIdx, shift, getMonday(date)).includes(doc.id)) return true;
+    if (doc.fixedMonthly) {
+        const f = (doc.fixedMonthlyData || {})[dateKey(date)];
+        return !!(f && f[shift]);
+    }
+    return !!(doc.fixedSchedule && doc.fixedSchedule[`${dayIdx}_${shift}`]);
+}
+
+function medicoMeses() {
+    const hoje = new Date();
+    const out = [];
+    for (let i = 0; i < 6; i++) {
+        const d = new Date(hoje.getFullYear(), hoje.getMonth() + i, 1);
+        out.push({ y: d.getFullYear(), m: d.getMonth(),
+                   key: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`,
+                   fechado: monthHasSchedule(d.getFullYear(), d.getMonth()) });
+    }
+    return out;
+}
+
+// Per shift: 'ferias', 'indisp' or null
+function medicoEstadoDia(doc, dk) {
+    const u = (doc.monthlyUnavailability || {})[dk] || {};
+    const v = (doc.monthlyVacation || {})[dk] || {};
+    const um = t => v[t] ? 'ferias' : u[t] ? 'indisp' : null;
+    return { day: um('day'), night: um('night') };
+}
+
+function medicoDescreve(est) {
+    if (est.day === 'ferias' && est.night === 'ferias') return 'Férias';
+    if (est.day === 'indisp' && est.night === 'indisp') return 'Indisponível, dia inteiro';
+    if (!est.day !== !est.night) {          // just one shift marked
+        const turno = est.day ? 'Turno de dia' : 'Turno de noite';
+        return (est.day || est.night) === 'ferias' ? `Férias, ${turno.toLowerCase()}` : turno;
+    }
+    const nome = { indisp: 'indisponível', ferias: 'férias' };
+    const partes = [];
+    if (est.day) partes.push(`Dia: ${nome[est.day]}`);
+    if (est.night) partes.push(`Noite: ${nome[est.night]}`);
+    return partes.join(' · ');
+}
+
+function medicoDataCurta(dk) {
+    const d = parseDateKey(dk);
+    return `${d.getDate()} de ${MONTH_NAMES[d.getMonth()].toLowerCase()}`;
+}
+
+function medicoIntervalo(de, ate) {
+    if (de === ate) return medicoDataCurta(de);
+    const a = parseDateKey(de), b = parseDateKey(ate);
+    if (a.getMonth() === b.getMonth() && a.getFullYear() === b.getFullYear())
+        return `${a.getDate()} a ${b.getDate()} de ${MONTH_NAMES[b.getMonth()].toLowerCase()}`;
+    return `${medicoDataCurta(de)} a ${medicoDataCurta(ate)}`;
+}
+
+function medicoNDias(de, ate) {
+    return Math.round((parseDateKey(ate) - parseDateKey(de)) / 864e5) + 1;
+}
+
+function medicoMaisDias(dk, n) {
+    const d = parseDateKey(dk);
+    d.setDate(d.getDate() + n);
+    return dateKey(d);
+}
+
+function renderMedicoView() {
+    const root = document.getElementById('medico-root');
+    if (!root) return;
+    const doc = medicoDoc();
+
+    if (!doc) {
+        root.innerHTML = `<div class="md-wrap"><div class="md-card md-unlinked">
+            <h3>A sua conta ainda não está ligada à sua ficha</h3>
+            <p>Para marcar indisponibilidades e férias, o email com que entrou tem de ser o mesmo
+            que está na sua ficha de médico. Peça ao administrador para o confirmar.</p>
+            <p class="md-muted">Email desta sessão: <strong>${esc(currentUser && currentUser.email || '—')}</strong></p>
+        </div></div>`;
+        return;
+    }
+
+    const meses = medicoMeses();
+    if (!medicoMesSel || !meses.some(x => x.key === medicoMesSel)) {
+        const aberto = meses.find(x => !x.fechado);
+        medicoMesSel = (aberto || meses[0]).key;
+    }
+    const mes = meses.find(x => x.key === medicoMesSel);
+    const hojeDk = dateKey(new Date());
+
+    // Totals from today on
+    const unav = doc.monthlyUnavailability || {};
+    const vac = doc.monthlyVacation || {};
+    const nIndisp = Object.keys(unav).filter(dk => dk >= hojeDk && (unav[dk].day || unav[dk].night)
+        && !(vac[dk] && vac[dk].day && vac[dk].night)).length;
+    const nFerias = Object.keys(vac).filter(dk => dk >= hojeDk && (vac[dk].day || vac[dk].night)).length;
+
+    const primeiro = (doc.name || '').trim().split(/\s+/)[0] || '';
+    const saud = /a$/i.test(primeiro) ? 'Bem-vinda' : 'Bem-vindo';
+
+    let html = `<div class="md-wrap">
+        <div class="md-hero">
+            <div class="md-hello">${saud}, <strong>${esc(primeiro)}</strong></div>
+            <p class="md-sub">Toque num dia para marcar que não pode trabalhar ou que está de férias.
+            O resto do seu horário é definido pela rotação do serviço.</p>
+            <div class="md-stats">
+                <div class="md-stat"><span class="md-n">${nIndisp}</span>
+                    <span class="md-l">${nIndisp === 1 ? 'dia indisponível' : 'dias indisponível'}</span></div>
+                <div class="md-stat"><span class="md-n">${nFerias}</span>
+                    <span class="md-l">${nFerias === 1 ? 'dia de férias' : 'dias de férias'}</span></div>
+            </div>
+        </div>
+
+        <div class="md-months" role="tablist" aria-label="Meses">`;
+    meses.forEach(x => {
+        html += `<button class="md-month ${x.key === medicoMesSel ? 'active' : ''} ${x.fechado ? 'closed' : ''}"
+            role="tab" aria-selected="${x.key === medicoMesSel}" onclick="medicoMes('${x.key}')">
+            <span class="md-month-name">${MONTH_NAMES[x.m]}</span>
+            <span class="md-month-state">${x.fechado ? 'Escala feita' : 'Aberto'}</span>
+        </button>`;
+    });
+    html += `</div><div class="md-card">`;
+
+    if (mes.fechado) {
+        html += `<div class="md-banner">
+            <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M12 2a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2h-1V7a5 5 0 0 0-5-5Zm-3 8V7a3 3 0 1 1 6 0v3H9Z"/></svg>
+            <div><strong>A escala de ${MONTH_NAMES[mes.m]} já foi feita.</strong>
+            Para alterar a sua disponibilidade ou férias neste mês, fale com o administrador.</div>
+        </div>`;
+    }
+
+    html += `<div class="md-cal-title">${MONTH_NAMES[mes.m]} ${mes.y}</div>
+        <div class="md-cal" role="grid">`;
+    DAYS.forEach((d, i) => { html += `<div class="md-dow ${i >= 5 ? 'we' : ''}">${d}</div>`; });
+
+    const first = new Date(mes.y, mes.m, 1);
+    const pad = (first.getDay() + 6) % 7;
+    for (let i = 0; i < pad; i++) html += `<div class="md-pad"></div>`;
+    const nDias = new Date(mes.y, mes.m + 1, 0).getDate();
+    for (let dia = 1; dia <= nDias; dia++) {
+        const date = new Date(mes.y, mes.m, dia);
+        const dk = dateKey(date);
+        const est = medicoEstadoDia(doc, dk);
+        const passado = dk < hojeDk;
+        const editavel = !mes.fechado && !passado;
+        const prevD = medicoTurnoPrevisto(doc, date, 'day');
+        const prevN = medicoTurnoPrevisto(doc, date, 'night');
+        const cls = ['md-day'];
+        if (passado) cls.push('past');
+        if (mes.fechado) cls.push('locked');
+        if (dk === hojeDk) cls.push('today');
+        let tag = '';
+        if (est.day === 'ferias' && est.night === 'ferias') { cls.push('vac-full'); tag = 'Férias'; }
+        else if (est.day === 'indisp' && est.night === 'indisp') { cls.push('unav-full'); tag = 'Indisp.'; }
+        else if (est.day || est.night) {
+            const soFerias = (est.day || 'ferias') === 'ferias' && (est.night || 'ferias') === 'ferias';
+            cls.push(soFerias ? 'vac-part' : 'unav-part');
+            tag = est.day && est.night ? 'D+N' : est.day ? 'Dia' : 'Noite';
+        }
+        if ((date.getDay() + 6) % 7 >= 5) cls.push('we');
+        if (medicoFeriasDe) {
+            const fim = medicoFeriasAte || medicoFeriasDe;
+            if (dk >= medicoFeriasDe && dk <= fim) cls.push('vac-sel');
+            if (dk === medicoFeriasDe) cls.push('vac-start');
+            if (dk === fim) cls.push('vac-end');
+        }
+        const desc = medicoDescreve(est);
+        const aria = `${DAYS_FULL[(date.getDay() + 6) % 7]} ${dia}` +
+            (desc ? `, ${desc.toLowerCase()}` : '') +
+            (prevD || prevN ? `, turno previsto: ${[prevD ? 'dia' : '', prevN ? 'noite' : ''].filter(Boolean).join(' e ')}` : '');
+        html += `<button class="${cls.join(' ')}" ${editavel ? `onclick="medicoToque('${dk}')"` : 'disabled'}
+            aria-label="${esc(aria)}">
+            <span class="md-num">${dia}</span>
+            <span class="md-prev">${prevD ? '<i class="pd">D</i>' : ''}${prevN ? '<i class="pn">N</i>' : ''}</span>
+            ${tag ? `<span class="md-tag">${tag}</span>` : ''}
+        </button>`;
+    }
+    html += `</div>
+        <div class="md-legend">
+            <span><i class="md-sw unav"></i> Indisponível</span>
+            <span><i class="md-sw vac"></i> Férias</span>
+            <span><i class="pd">D</i><i class="pn">N</i> Turno previsto na sua rotação</span>
+        </div>
+    </div>`;
+
+    // This month's marks: whole-day férias grouped into periods, the rest day by day
+    const podeMexer = dk => !mes.fechado && dk >= hojeDk;
+    const itens = [];
+    for (let dia = 1; dia <= nDias; dia++) {
+        const dk = dateKey(new Date(mes.y, mes.m, dia));
+        const est = medicoEstadoDia(doc, dk);
+        if (!est.day && !est.night) continue;
+        const ultimo = itens[itens.length - 1];
+        if (est.day === 'ferias' && est.night === 'ferias') {
+            if (ultimo && ultimo.ferias && ultimo.ate === medicoMaisDias(dk, -1)) ultimo.ate = dk;
+            else itens.push({ ferias: true, de: dk, ate: dk });
+        } else {
+            itens.push({ ferias: false, de: dk, est });
+        }
+    }
+    html += `<div class="md-card md-list">
+        <h3>Marcado em ${MONTH_NAMES[mes.m]}</h3>`;
+    if (!itens.length) {
+        html += `<p class="md-empty">${mes.fechado
+            ? 'Não tem indisponibilidades nem férias marcadas neste mês.'
+            : 'Ainda não marcou nada. Toque num dia do calendário para começar.'}</p>`;
+    } else {
+        html += `<ul>`;
+        itens.forEach(it => {
+            if (it.ferias) {
+                const n = medicoNDias(it.de, it.ate);
+                html += `<li class="vac">
+                    <div><strong>${it.de === it.ate ? `${DAYS_FULL[(parseDateKey(it.de).getDay() + 6) % 7]}, ${medicoDataCurta(it.de)}` : medicoIntervalo(it.de, it.ate)}</strong>
+                    <span>Férias${n > 1 ? ` · ${n} dias` : ''}</span></div>
+                    ${podeMexer(it.de) ? `<button class="md-link" onclick="medicoRemoverFerias('${it.de}','${it.ate}')">Remover</button>` : ''}
+                </li>`;
+            } else {
+                const date = parseDateKey(it.de);
+                const so = it.est.day && !it.est.night ? ' · ' + SHIFT_TIMES.day : it.est.night && !it.est.day ? ' · ' + SHIFT_TIMES.night : '';
+                html += `<li>
+                    <div><strong>${DAYS_FULL[(date.getDay() + 6) % 7]}, ${medicoDataCurta(it.de)}</strong>
+                    <span>${medicoDescreve(it.est)}${so}</span></div>
+                    ${podeMexer(it.de) ? `<button class="md-link" onclick="medicoAbrir('${it.de}')">Alterar</button>` : ''}
+                </li>`;
+            }
+        });
+        html += `</ul>`;
+    }
+    html += `</div></div>`;
+
+    // Action bar while choosing a period of férias on the calendar
+    if (medicoFeriasDe) {
+        const de = medicoFeriasDe, ate = medicoFeriasAte || medicoFeriasDe;
+        const n = medicoNDias(de, ate);
+        const fechado = meses.find(x => x.fechado && x.key >= de.slice(0, 7) && x.key <= ate.slice(0, 7));
+        let comIndisp = 0;
+        for (let k = de; k <= ate; k = medicoMaisDias(k, 1)) {
+            const e = medicoEstadoDia(doc, k);
+            if (e.day === 'indisp' || e.night === 'indisp') comIndisp++;
+        }
+        const erro = n > 62 ? 'Marque no máximo 62 dias de cada vez.'
+            : fechado ? `A escala de ${MONTH_NAMES[fechado.m]} já foi feita — escolha um último dia antes disso.` : '';
+        const nota = !medicoFeriasAte
+            ? 'Toque no último dia de férias. Pode mudar de mês nos separadores acima.'
+            : comIndisp ? `${comIndisp === 1 ? 'Um dia marcado' : comIndisp + ' dias marcados'} como indisponível passa${comIndisp === 1 ? '' : 'm'} a férias.` : '';
+        html += `<div class="md-selbar" role="region" aria-label="Escolher período de férias">
+            <div class="md-selbar-txt">
+                <strong>Férias: ${medicoIntervalo(de, ate)}${n > 1 ? ` · ${n} dias` : ''}</strong>
+                ${erro ? `<span class="err">${erro}</span>` : nota ? `<span>${nota}</span>` : ''}
+            </div>
+            <div class="md-selbar-btns">
+                <button class="md-selbar-cancel" onclick="medicoFeriasCancelar()">Cancelar</button>
+                <button class="md-selbar-ok" onclick="medicoFeriasConfirmar(this)" ${erro ? 'disabled' : ''}>
+                    ${medicoFeriasAte ? 'Confirmar férias' : 'Só este dia'}</button>
+            </div>
+        </div>`;
+    }
+
+    root.innerHTML = html;
+    document.body.classList.toggle('md-selecting', !!medicoFeriasDe);
+}
+
+// A tap on a day: normally opens the day sheet; while choosing férias, it sets the last day.
+window.medicoToque = function (dk) {
+    if (!medicoFeriasDe) { medicoAbrir(dk); return; }
+    if (dk < medicoFeriasDe) { medicoFeriasDe = dk; medicoFeriasAte = null; }
+    else medicoFeriasAte = dk === medicoFeriasDe ? null : dk;
+    renderMedicoView();
+};
+
+window.medicoFeriasCancelar = function () {
+    medicoFeriasDe = medicoFeriasAte = null;
+    renderMedicoView();
+};
+
+window.medicoFeriasConfirmar = async function (btn) {
+    const de = medicoFeriasDe, ate = medicoFeriasAte || medicoFeriasDe;
+    if (!de) return;
+    btn.disabled = true;
+    btn.textContent = 'A guardar…';
+    const erro = await medicoRpc(de, ate, 'both', 'ferias', true);
+    if (erro) {
+        btn.disabled = false;
+        btn.textContent = medicoFeriasAte ? 'Confirmar férias' : 'Só este dia';
+        const t = document.querySelector('.md-selbar-txt');
+        t.querySelectorAll('span').forEach(x => x.remove());
+        t.insertAdjacentHTML('beforeend', `<span class="err">${esc(erro)}</span>`);
+        return;
+    }
+    medicoFeriasDe = medicoFeriasAte = null;
+    renderMedicoView();
+    medicoToast(`Férias marcadas: ${medicoIntervalo(de, ate)}`);
+};
+
+window.medicoMes = function (key) {
+    medicoMesSel = key;
+    renderMedicoView();
+};
+
+// Bottom sheet shell shared by the day, férias and remove dialogs.
+function medicoSheet(titulo, sub, corpo) {
+    document.querySelectorAll('.md-sheet-backdrop').forEach(n => n.remove());
+    const wrap = document.createElement('div');
+    wrap.className = 'md-sheet-backdrop';
+    wrap.innerHTML = `<div class="md-sheet" role="dialog" aria-modal="true" aria-labelledby="md-sheet-title">
+        <div class="md-sheet-grip" aria-hidden="true"></div>
+        <h3 id="md-sheet-title">${titulo}</h3>
+        ${sub ? `<p class="md-sheet-sub">${sub}</p>` : ''}
+        ${corpo}
+        <p class="md-sheet-err" role="alert" hidden></p>
+        <button class="md-sheet-cancel">Cancelar</button>
+    </div>`;
+    document.body.appendChild(wrap);
+    requestAnimationFrame(() => wrap.classList.add('in'));
+
+    const onKey = e => { if (e.key === 'Escape') fechar(); };
+    function fechar() {
+        document.removeEventListener('keydown', onKey);
+        wrap.classList.remove('in');
+        setTimeout(() => wrap.remove(), 180);
+    }
+    document.addEventListener('keydown', onKey);
+    wrap.addEventListener('click', e => { if (e.target === wrap) fechar(); });
+    wrap.querySelector('.md-sheet-cancel').addEventListener('click', fechar);
+
+    // Run a save from button `b`: lock the sheet, show errors in place, close on success.
+    async function guardar(b, fn) {
+        const errEl = wrap.querySelector('.md-sheet-err');
+        errEl.hidden = true;
+        wrap.querySelectorAll('button, input').forEach(x => x.disabled = true);
+        b.classList.add('saving');
+        const erro = await fn();
+        if (erro) {
+            errEl.textContent = erro;
+            errEl.hidden = false;
+            wrap.querySelectorAll('button, input').forEach(x => x.disabled = false);
+            b.classList.remove('saving');
+            return false;
+        }
+        fechar();
+        renderMedicoView();
+        return true;
+    }
+    return { wrap, fechar, guardar };
+}
+
+window.medicoAbrir = function (dk) {
+    const doc = medicoDoc();
+    if (!doc) return;
+    const date = parseDateKey(dk);
+    const est = medicoEstadoDia(doc, dk);
+    const prevD = medicoTurnoPrevisto(doc, date, 'day');
+    const prevN = medicoTurnoPrevisto(doc, date, 'night');
+    const previsto = prevD && prevN ? 'Tem turno de dia e de noite previstos neste dia.'
+        : prevD ? 'Tem turno de dia previsto neste dia.'
+        : prevN ? 'Tem turno de noite previsto neste dia.'
+        : 'Não tem turno previsto neste dia.';
+    const atual = est.day === 'ferias' && est.night === 'ferias' ? 'ferias'
+        : est.day === 'indisp' && est.night === 'indisp' ? 'both'
+        : est.day === 'indisp' && !est.night ? 'day'
+        : est.night === 'indisp' && !est.day ? 'night' : null;
+
+    const s = medicoSheet(`${DAYS_FULL[(date.getDay() + 6) % 7]}, ${medicoDataCurta(dk)}`, previsto, `
+        <p class="md-sheet-q">Em que turno não pode trabalhar?</p>
+        <div class="md-opts">
+            <button class="md-opt ${atual === 'both' ? 'sel' : ''}" data-v="both">
+                <b>Dia inteiro</b><span>Não posso trabalhar neste dia</span></button>
+            <button class="md-opt ${atual === 'day' ? 'sel' : ''}" data-v="day">
+                <b>Só o turno de dia</b><span>${SHIFT_TIMES.day}</span></button>
+            <button class="md-opt ${atual === 'night' ? 'sel' : ''}" data-v="night">
+                <b>Só o turno de noite</b><span>${SHIFT_TIMES.night}</span></button>
+        </div>
+        <div class="md-or"><span>ou</span></div>
+        <div class="md-opts">
+            <button class="md-opt vac ${atual === 'ferias' ? 'sel' : ''}" data-ferias>
+                <b>Férias</b><span>A partir deste dia — a seguir toque no último dia no calendário</span></button>
+        </div>
+        ${est.day || est.night ? `<button class="md-opt-clear" data-v="none">Afinal estou disponível neste dia</button>` : ''}`);
+
+    s.wrap.querySelector('[data-ferias]').addEventListener('click', () => {
+        s.fechar();
+        medicoFeriasDe = dk;
+        medicoFeriasAte = null;
+        renderMedicoView();
+    });
+    s.wrap.querySelectorAll('[data-v]').forEach(b => b.addEventListener('click', async () => {
+        const v = b.dataset.v;
+        const desejado = { day: v === 'both' || v === 'day' ? 'indisp' : null, night: v === 'both' || v === 'night' ? 'indisp' : null };
+        const ok = await s.guardar(b, () => medicoAplicar(dk, desejado));
+        if (ok) medicoToast(v === 'none'
+            ? `${medicoDataCurta(dk)}: disponível`
+            : `Guardado: ${medicoDataCurta(dk)}, ${medicoDescreve(desejado).toLowerCase()}`);
+    }));
+    setTimeout(() => { const x = s.wrap.querySelector('.md-opt.sel') || s.wrap.querySelector('.md-opt'); if (x) x.focus(); }, 50);
+};
+
+window.medicoRemoverFerias = function (de, ate) {
+    const n = medicoNDias(de, ate);
+    const s = medicoSheet('Remover férias?',
+        `${medicoIntervalo(de, ate)}${n > 1 ? ` (${n} dias)` : ''} deixa${n > 1 ? 'm' : ''} de estar marcado${n > 1 ? 's' : ''} como férias.`,
+        `<button class="md-primary danger" data-ok>Remover férias</button>`);
+    const b = s.wrap.querySelector('[data-ok]');
+    b.addEventListener('click', async () => {
+        const ok = await s.guardar(b, () => medicoRpc(de, ate, 'both', 'ferias', false));
+        if (ok) medicoToast(`Férias removidas: ${medicoIntervalo(de, ate)}`);
+    });
+    setTimeout(() => b.focus(), 50);
+};
+
+// One server call. Returns an error message, or null on success.
+async function medicoRpc(de, ate, turno, tipo, marcar) {
+    const doc = medicoDoc();
+    if (!doc) return 'A sua conta não está ligada a uma ficha de médico.';
+    const { data, error } = await db.rpc('medico_ausencia',
+        { p_de: de, p_ate: ate, p_turno: turno, p_tipo: tipo, p_marcar: marcar });
+    if (error) {
+        const msg = String(error.message || '');
+        if (/could not find the function|does not exist|PGRST202/i.test(msg + ' ' + (error.code || '')))
+            return 'Esta funcionalidade ainda não está activa no servidor. Avise o administrador.';
+        if (/fetch|network|Failed to/i.test(msg))
+            return 'Sem ligação. Verifique a internet e tente outra vez.';
+        return msg || 'Não foi possível guardar. Tente outra vez.';
+    }
+    if (data && typeof data === 'object') {
+        doc.monthlyUnavailability = data.unavailability || {};
+        doc.monthlyVacation = data.vacation || {};
+        doc.indispLog = Array.isArray(data.log) ? data.log : (doc.indispLog || []);
+    }
+    // The server already holds exactly this; nothing for this device to send.
+    snapshotBase(['chbv_doctors']);
+    return null;
+}
+
+// Bring one date to `desejado` ({day, night}: 'indisp' | 'ferias' | null) in as few
+// calls as possible. Marking one kind clears the other on the server.
+async function medicoAplicar(dk, desejado) {
+    const doc = medicoDoc();
+    if (!doc) return 'A sua conta não está ligada a uma ficha de médico.';
+    const atual = medicoEstadoDia(doc, dk);
+    const ops = {};
+    SHIFTS.forEach(t => {
+        if (atual[t] === desejado[t]) return;
+        ops[t] = desejado[t] ? [desejado[t], true] : [atual[t], false];
+    });
+    const chamadas = ops.day && ops.night && ops.day.join() === ops.night.join()
+        ? [['both', ...ops.day]]
+        : Object.entries(ops).map(([t, op]) => [t, ...op]);
+    for (const [turno, tipo, marcar] of chamadas) {
+        const erro = await medicoRpc(dk, dk, turno, tipo, marcar);
+        if (erro) return erro;
+    }
+    return null;
+}
+
+function medicoToast(texto) {
+    document.querySelectorAll('.md-toast').forEach(n => n.remove());
+    const t = document.createElement('div');
+    t.className = 'md-toast';
+    t.setAttribute('role', 'status');
+    t.innerHTML = `<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M9 16.2 4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4z"/></svg><span>${esc(texto)}</span>`;
+    document.body.appendChild(t);
+    requestAnimationFrame(() => t.classList.add('in'));
+    setTimeout(() => { t.classList.remove('in'); setTimeout(() => t.remove(), 250); }, 3200);
+}
+
+// ---- Admin: who marked what, and when ----
+let ihFiltro = '';
+
+function quandoRelativo(iso) {
+    const d = new Date(iso);
+    if (isNaN(d.getTime())) return '';
+    const min = Math.round((Date.now() - d.getTime()) / 60000);
+    if (min < 1) return 'agora mesmo';
+    if (min < 60) return `há ${min} min`;
+    const h = Math.round(min / 60);
+    if (h < 24) return `há ${h} h`;
+    const dias = Math.round(h / 24);
+    if (dias === 1) return 'ontem';
+    if (dias < 7) return `há ${dias} dias`;
+    return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+}
+
+function renderIndispHistory() {
+    const box = document.getElementById('indisp-history');
+    if (!box) return;
+    if (currentRole !== 'admin') { box.innerHTML = ''; return; }
+
+    const eventos = [];
+    doctors.forEach(d => (d.indispLog || []).forEach(e => eventos.push({ ...e, doc: d })));
+    eventos.sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0));
+    const semana = Date.now() - 7 * 864e5;
+    const recentes = eventos.filter(e => new Date(e.ts).getTime() >= semana).length;
+    const comRegisto = doctors.filter(d => (d.indispLog || []).length).sort((a, b) => a.name.localeCompare(b.name));
+    const lista = ihFiltro ? eventos.filter(e => e.doc.id === ihFiltro) : eventos;
+    const MAX = 60;
+    const curta = dk => {
+        const dt = parseDateKey(dk);
+        return isNaN(dt.getTime()) ? esc(dk) : `${DAYS[(dt.getDay() + 6) % 7]} ${dt.getDate()} ${MONTH_NAMES[dt.getMonth()].slice(0, 3)}`;
+    };
+
+    const linhas = lista.slice(0, MAX).map(e => {
+        const ferias = e.motivo === 'ferias';     // older entries have no motivo: indisponibilidade
+        const turno = e.shift === 'both' ? 'dia inteiro' : e.shift === 'day' ? 'turno de dia' : 'turno de noite';
+        const dias = e.ate && e.ate !== e.dk ? `${curta(e.dk)} – ${curta(e.ate)} (${medicoNDias(e.dk, e.ate)} dias)` : curta(e.dk);
+        const quando = new Date(e.ts);
+        const titulo = isNaN(quando.getTime()) ? '' : quando.toLocaleString('pt-PT');
+        const acao = e.tipo === 'retirou'
+            ? (ferias ? 'retirou férias' : 'retirou indisponível')
+            : (ferias ? 'marcou férias' : 'marcou indisponível');
+        return `<div class="ih-row">
+            <span class="ih-when" title="${esc(titulo)}">${quandoRelativo(e.ts)}</span>
+            <span class="ih-name">${esc(e.doc.name)}</span>
+            <span class="ih-act ${e.tipo === 'retirou' ? 'off' : ferias ? 'vac' : 'on'}">${acao}</span>
+            <span class="ih-what">${dias}${ferias && e.shift === 'both' ? '' : ' · ' + turno}</span>
+        </div>`;
+    }).join('');
+
+    box.innerHTML = `<details class="ih-panel" ${ihFiltro ? 'open' : ''}>
+        <summary>
+            <span class="ih-title">Indisponibilidades e férias marcadas pelos médicos</span>
+            ${recentes ? `<span class="ih-badge">${recentes} nos últimos 7 dias</span>` : `<span class="ih-count">${eventos.length}</span>`}
+        </summary>
+        <div class="ih-body">
+            ${eventos.length ? `<div class="ih-tools">
+                <label for="ih-filtro">Médico</label>
+                <select id="ih-filtro">
+                    <option value="">Todos</option>
+                    ${comRegisto.map(d => `<option value="${esc(d.id)}" ${d.id === ihFiltro ? 'selected' : ''}>${esc(d.name)}</option>`).join('')}
+                </select>
+            </div>` : ''}
+            ${lista.length ? linhas : `<p class="ih-empty">${eventos.length ? 'Sem registos para este médico.'
+                : 'Ainda nenhum médico marcou indisponibilidades ou férias. Quando o fizerem, aparece aqui quem, que dias e quando.'}</p>`}
+            ${lista.length > MAX ? `<p class="ih-more">A mostrar as ${MAX} mais recentes de ${lista.length}.</p>` : ''}
+        </div>
+    </details>`;
+
+    const sel = box.querySelector('#ih-filtro');
+    if (sel) sel.addEventListener('change', () => { ihFiltro = sel.value; renderIndispHistory(); });
+}
+
 function applyRoleUI(role) {
-    document.body.classList.remove('role-read', 'role-write', 'role-admin', 'role-tarefeiro');
+    document.body.classList.remove('role-read', 'role-write', 'role-admin', 'role-tarefeiro', 'role-medico');
     document.body.classList.add(`role-${role}`);
 }
 
@@ -1495,6 +2114,17 @@ async function renderUsersAdmin() {
             linkCell = card
                 ? `<span class="link-ok">✓ ${esc(card.name)}</span>`
                 : `<span class="link-bad">✗ sem cartão</span>`;
+        } else if (p.role === 'medico') {
+            const pe = normEmail(p.email);
+            const ficha = pe ? doctors.find(d => normEmail(d.email) === pe) : null;
+            linkCell = ficha
+                ? `<span class="link-ok">✓ ${esc(ficha.name)}</span>`
+                : `<span class="link-bad">✗ sem ficha — confirme o email na ficha do médico</span>`;
+        } else {
+            // Admin / leitura: no card needed, but show it when one shares the email
+            const pe = normEmail(p.email);
+            const ficha = pe && (doctors.find(d => normEmail(d.email) === pe) || terceiros.find(t => normEmail(t.email) === pe));
+            if (ficha) linkCell = `<span class="link-ok">✓ ${esc(ficha.name)}</span>`;
         }
 
         html += `<tr class="${isSelf ? 'row-self' : ''}">
@@ -1502,19 +2132,28 @@ async function renderUsersAdmin() {
             <td>${esc(p.email || "—")}</td>
             <td>
                 <select class="role-select" data-uid="${p.id}" ${isSelf ? 'disabled' : ''}>
-                    <option value="read" ${(p.role !== 'admin' && p.role !== 'tarefeiro') ? 'selected' : ''}>Leitura</option>
+                    <option value="read" ${!['admin', 'tarefeiro', 'medico'].includes(p.role) ? 'selected' : ''}>Leitura</option>
+                    <option value="medico" ${p.role === 'medico' ? 'selected' : ''}>Médico</option>
                     <option value="tarefeiro" ${p.role === 'tarefeiro' ? 'selected' : ''}>Tarefeiro</option>
                     <option value="admin" ${p.role === 'admin' ? 'selected' : ''}>Admin</option>
                 </select>
             </td>
             <td>${linkCell}</td>
             <td>${since}</td>
-            <td>${isSelf ? '<span class="badge badge-self">Você</span>' : `<button class="btn btn-sm btn-danger" onclick="deleteUser('${p.id}')">Remover</button>`}</td>
+            <td class="user-actions">
+                <button class="btn btn-sm" data-edit-uid="${p.id}">Alterar</button>
+                ${isSelf ? '<span class="badge badge-self">Você</span>' : `<button class="btn btn-sm btn-danger" onclick="deleteUser('${p.id}')">Remover</button>`}
+            </td>
         </tr>`;
     });
 
     html += '</tbody></table>';
     list.innerHTML = html;
+
+    list.querySelectorAll('[data-edit-uid]').forEach(btn => {
+        const p = profiles.find(x => x.id === btn.dataset.editUid);
+        btn.addEventListener('click', () => openAccountModal(p));
+    });
 
     list.querySelectorAll('.role-select').forEach(sel => {
         sel.addEventListener('change', async () => {
@@ -1544,6 +2183,68 @@ window.deleteUser = async function(uid) {
     showSaveStatus('Utilizador eliminado');
 };
 
+
+// ---- Admin: change a user's email and/or password ----
+// Goes through the admin_alterar_conta server function (supabase/admin-alterar-conta.sql),
+// which also moves the linked doctor / tarefeiro card to the new email.
+let accountUid = null;
+
+function openAccountModal(p) {
+    if (!p) return;
+    accountUid = p.id;
+    document.getElementById('account-who').innerHTML = `<strong>${esc(p.name || '—')}</strong> · ${esc(p.email || '')}`;
+    document.getElementById('account-email').value = p.email || '';
+    document.getElementById('account-password').value = '';
+    document.getElementById('account-error').style.display = 'none';
+    document.getElementById('account-success').style.display = 'none';
+    document.getElementById('account-modal').classList.add('open');
+    setTimeout(() => document.getElementById('account-password').focus(), 50);
+}
+
+function closeAccountModal() {
+    document.getElementById('account-modal').classList.remove('open');
+    accountUid = null;
+}
+document.getElementById('account-modal-close').addEventListener('click', closeAccountModal);
+document.getElementById('account-cancel').addEventListener('click', closeAccountModal);
+
+document.getElementById('account-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = document.getElementById('account-submit');
+    const errEl = document.getElementById('account-error');
+    const okEl = document.getElementById('account-success');
+    const email = document.getElementById('account-email').value.trim();
+    const password = document.getElementById('account-password').value;
+    errEl.style.display = 'none';
+    okEl.style.display = 'none';
+    btn.disabled = true;
+    btn.textContent = 'A guardar…';
+
+    const { data, error } = await db.rpc('admin_alterar_conta',
+        { p_user: accountUid, p_email: email, p_password: password || null });
+
+    btn.disabled = false;
+    btn.textContent = 'Guardar';
+    if (error) {
+        const msg = String(error.message || '');
+        errEl.textContent = /could not find the function|PGRST202/i.test(msg + ' ' + (error.code || ''))
+            ? 'Falta instalar a função no Supabase: corra supabase/admin-alterar-conta.sql no SQL Editor.'
+            : msg || 'Não foi possível guardar.';
+        errEl.style.display = 'block';
+        return;
+    }
+    const partes = [];
+    if (data && data.email) partes.push(`email: ${data.email}`);
+    if (password) partes.push('palavra-passe alterada');
+    if (data && data.fichas) partes.push('ficha atualizada');
+    okEl.textContent = 'Guardado — ' + partes.join(' · ');
+    okEl.style.display = 'block';
+    document.getElementById('account-password').value = '';
+    renderUsersAdmin();
+    // The card's email may have changed on the server: pull it in so this tab doesn't
+    // later save the old one back.
+    if (data && data.fichas) refreshFromServer();
+});
 
 document.getElementById('invite-user-btn').addEventListener('click', () => {
     document.getElementById('invite-modal').classList.add('open');
@@ -3645,6 +4346,7 @@ document.getElementById('view-list-btn').addEventListener('click', () => {
 
 // ---- Doctors Rendering ----
 function renderDoctors() {
+    renderIndispHistory();
     const list = document.getElementById('doctors-list');
 
     if (doctors.length === 0) {
@@ -4201,6 +4903,7 @@ document.getElementById('add-doctor-btn').addEventListener('click', () => {
     modalFixedMonth = new Date().getMonth();
     modalFixedYear = new Date().getFullYear();
     modalAvailData = {};
+    modalDatesBase = null;
     modalUnavailData = {};
     modalVacationData = {};
     modalAvailMode = 'available';
@@ -4250,6 +4953,8 @@ window.editDoctor = function(id) {
     modalAvailData = JSON.parse(JSON.stringify(doc.monthlyAvailability || {}));
     modalUnavailData = JSON.parse(JSON.stringify(doc.monthlyUnavailability || {}));
     modalVacationData = JSON.parse(JSON.stringify(doc.monthlyVacation || {}));
+    modalDatesBase = JSON.parse(JSON.stringify({ monthlyAvailability: modalAvailData,
+        monthlyUnavailability: modalUnavailData, monthlyVacation: modalVacationData }));
     modalAvailMode = doc.availMode || 'available';
     modalAvailMonth = new Date().getMonth();
     modalAvailYear = new Date().getFullYear();
@@ -4312,7 +5017,13 @@ doctorForm.addEventListener('submit', e => {
 
     const idx = doctors.findIndex(d => d.id === id);
     if (idx >= 0) {
-        doctors[idx] = docData;
+        // Keep fields this form doesn't show (indispLog), and dates the doctor marked
+        // themselves while the form was open (arrived through auto-refresh).
+        const atual = doctors[idx];
+        if (modalDatesBase) DATE_MAP_FIELDS.forEach(k => {
+            docData[k] = mergeDateMap(modalDatesBase[k], docData[k], atual[k]);
+        });
+        doctors[idx] = { ...atual, ...docData };
     } else {
         doctors.push(docData);
     }
